@@ -73,3 +73,31 @@ class RunConfig(BaseModel):
     @property
     def min_claims_per_rq(self) -> int:
         return 5 if self.mode == RunMode.DEEP else 2
+
+    @property
+    def max_collect_rounds(self) -> int:
+        return 6 if self.mode == RunMode.DEEP else 3
+
+    @property
+    def target_sources_per_rq(self) -> int:
+        return 6 if self.mode == RunMode.DEEP else 2
+
+    @property
+    def max_total_sources(self) -> int:
+        return 40 if self.mode == RunMode.DEEP else 12
+
+    @property
+    def target_claims_per_rq(self) -> int:
+        return 10 if self.mode == RunMode.DEEP else 5
+
+    @property
+    def target_sources_per_bucket(self) -> int:
+        return 3 if self.mode == RunMode.DEEP else 1
+
+    @property
+    def relevance_threshold(self) -> float:
+        return 0.5 if self.mode == RunMode.DEEP else 0.3
+
+    @property
+    def bucket_coverage_threshold(self) -> float:
+        return 0.8 if self.mode == RunMode.DEEP else 0.6

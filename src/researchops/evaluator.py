@@ -47,6 +47,14 @@ def compute_eval(run_dir: Path, *, config: RunConfig | None = None, llm_enabled:
     lq_rate = _low_quality_source_rate(events, sources)
     sec_rate = _section_nonempty_rate(report_path)
 
+    incomplete = state.incomplete_sections if state else []
+    collect_total = state.collect_rounds if state else 1
+    max_rollback = collect_total >= (config.max_collect_rounds if config else 6) if state else False
+    src_per_rq = _sources_per_rq(sources, run_dir)
+    bucket_cov = _bucket_coverage_rate(run_dir)
+    rel_avg = _relevance_avg(run_dir)
+    dec_count = _decision_count(run_dir)
+
     result = EvalResult(
         citation_coverage=citation_cov,
         source_diversity=diversity,
@@ -68,6 +76,13 @@ def compute_eval(run_dir: Path, *, config: RunConfig | None = None, llm_enabled:
         papers_per_rq=papers_rq,
         low_quality_source_rate=lq_rate,
         section_nonempty_rate=sec_rate,
+        incomplete_sections=incomplete,
+        collect_rounds_total=collect_total,
+        sources_per_rq=src_per_rq,
+        max_rollback_used=max_rollback,
+        bucket_coverage_rate=bucket_cov,
+        relevance_avg=rel_avg,
+        decision_count=dec_count,
     )
 
     eval_path = run_dir / "eval.json"
@@ -222,6 +237,82 @@ def _load_sources(run_dir: Path) -> list[Source]:
         if line.strip():
             sources.append(Source.model_validate(json.loads(line)))
     return sources
+
+
+def _sources_per_rq(sources: list[Source], run_dir: Path) -> dict[str, int]:
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        return {}
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        rqs = plan.get("research_questions", [])
+        result: dict[str, int] = {}
+        for rq in rqs:
+            rq_id = rq.get("rq_id", "")
+            count = sum(1 for s in sources if rq_id in s.source_id or rq_id in (s.query_id if hasattr(s, "query_id") else ""))
+            result[rq_id] = count
+        return result
+    except Exception:
+        return {}
+
+
+def _bucket_coverage_rate(run_dir: Path) -> float:
+    qa_path = run_dir / "qa_report.json"
+    if qa_path.exists():
+        try:
+            data = json.loads(qa_path.read_text(encoding="utf-8"))
+            return data.get("bucket_coverage_rate", 0.0)
+        except Exception:
+            pass
+
+    emap_path = run_dir / "evidence_map.json"
+    if not emap_path.exists():
+        return 0.0
+    try:
+        emap = json.loads(emap_path.read_text(encoding="utf-8"))
+        if not emap:
+            return 0.0
+        with_claims = sum(1 for v in emap.values() if v.get("claims"))
+        return round(with_claims / len(emap), 3)
+    except Exception:
+        return 0.0
+
+
+def _relevance_avg(run_dir: Path) -> float:
+    qa_path = run_dir / "qa_report.json"
+    if qa_path.exists():
+        try:
+            data = json.loads(qa_path.read_text(encoding="utf-8"))
+            val = data.get("relevance_avg", 0.0)
+            if val > 0:
+                return val
+        except Exception:
+            pass
+
+    notes_dir = run_dir / "notes"
+    if not notes_dir.exists():
+        return 0.0
+    scores: list[float] = []
+    for f in notes_dir.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            score = data.get("relevance_score", 0.0)
+            if score > 0:
+                scores.append(score)
+        except Exception:
+            continue
+    return round(sum(scores) / max(1, len(scores)), 3) if scores else 0.0
+
+
+def _decision_count(run_dir: Path) -> int:
+    path = run_dir / "decisions.jsonl"
+    if not path.exists():
+        return 0
+    try:
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        return len([line for line in lines if line.strip()])
+    except Exception:
+        return 0
 
 
 def _load_state(run_dir: Path) -> StateSnapshot | None:

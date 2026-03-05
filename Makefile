@@ -1,4 +1,4 @@
-.PHONY: install dev lint fmt test demo clean verify verify-llm verify-run evalset
+.PHONY: install dev lint fmt test demo clean verify verify-llm verify-run verify-loop verify-quality evalset
 
 install:
 	pip install -e .
@@ -31,6 +31,12 @@ verify-llm:
 
 verify-run:
 	python scripts/verify_run_integrity.py $(RUN)
+
+verify-loop:
+	python scripts/verify_no_infinite_rollback.py $(RUN)
+
+verify-quality:
+	python scripts/verify_research_quality.py $(RUN)
 
 evalset:
 	python scripts/run_evalset.py

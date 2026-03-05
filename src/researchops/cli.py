@@ -101,7 +101,7 @@ def run(
         seed=seed,
     )
 
-    console.print(f"[bold]ResearchOps Agent v1.0.0[/] — run [cyan]{run_id}[/]")
+    console.print(f"[bold]ResearchOps Agent v1.1.0[/] — run [cyan]{run_id}[/]")
     console.print(f"  Topic: {topic}")
     console.print(
         f"  Mode: {mode.value} | Net: {net_enabled} | Sandbox: {sandbox.value} | "

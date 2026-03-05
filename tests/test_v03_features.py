@@ -63,7 +63,15 @@ def test_plan_refinement_triggers_rollback(tmp_run_dir: Path):
     orch.registry = registry
     orch.sandbox = SubprocessSandbox()
     orch.reasoner = NoneReasoner()
-    orch.state = StateSnapshot(run_id="test", refinement_count=0)
+    orch.state = StateSnapshot(run_id="test", refinement_count=0, sources_hash="", claims_hash="")
+
+    from researchops.models import Source, SourceType
+    src = Source(source_id="s1", type=SourceType.HTML, hash="h1",
+                local_path=str(tmp_run_dir / "downloads" / "s1.txt"))
+    (tmp_run_dir / "downloads").mkdir(exist_ok=True)
+    (tmp_run_dir / "downloads" / "s1.txt").write_text("test content")
+    with (tmp_run_dir / "sources.jsonl").open("w") as f:
+        f.write(src.model_dump_json() + "\n")
 
     ctx = RunContext(
         run_dir=tmp_run_dir, config=config, state=orch.state,

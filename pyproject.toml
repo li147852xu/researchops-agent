@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "researchops"
-version = "1.0.0"
+version = "1.1.0"
 description = "ResearchOps Harness — multi-agent research orchestration with arXiv-first ingestion, evidence-first writing, sandbox verification, and run-scoped retrieval"
 readme = "README.md"
 license = "MIT"

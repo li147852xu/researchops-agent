@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -18,6 +19,7 @@ from researchops.reasoning import create_reasoner
 from researchops.registry.builtin import register_builtin_tools
 from researchops.registry.manager import ToolRegistry
 from researchops.sandbox.proc import SubprocessSandbox
+from researchops.supervisor import Supervisor
 from researchops.trace import TraceLogger
 
 try:
@@ -49,6 +51,7 @@ class Orchestrator:
         self.registry = self._build_registry()
         self.sandbox = self._build_sandbox()
         self.reasoner = create_reasoner(config)
+        self.supervisor = Supervisor(run_dir, self.reasoner)
         self.state = self._init_state()
 
     def _build_registry(self) -> ToolRegistry:
@@ -148,14 +151,85 @@ class Orchestrator:
                 save_state(self.state, self.run_dir)
                 raise
 
+            if stage == Stage.WRITE:
+                self.state.write_rounds += 1
+
             if result.rollback_to is not None:
                 rollback_target = result.rollback_to
+                rollback_reason = self._classify_rollback_reason(result.message)
+
+                diagnostics = self._build_diagnostics()
+                decision = self.supervisor.decide(
+                    self.state, diagnostics, self.config, self.trace,
+                )
+                self.trace.log(
+                    stage=stage.value, agent=agent.name,
+                    action="supervisor.decision",
+                    meta={
+                        "decision_id": decision.decision_id,
+                        "reason_codes": decision.reason_codes,
+                        "confidence": decision.confidence,
+                    },
+                )
+
+                if rollback_target == Stage.COLLECT:
+                    if self.state.collect_rounds >= self.config.max_collect_rounds:
+                        _print(f"  [yellow]Max collect rounds ({self.config.max_collect_rounds}) reached — degrade-completing[/]")
+                        self._degrade_complete(result.message)
+                        continue
+
+                    new_src_hash = self._compute_sources_hash()
+                    new_claims_hash = self._compute_claims_hash()
+                    has_progress = (
+                        new_src_hash != self.state.sources_hash
+                        or new_claims_hash != self.state.claims_hash
+                    )
+
+                    if has_progress:
+                        self.state.no_progress_streak = 0
+                    else:
+                        self.state.no_progress_streak += 1
+
+                    if self.state.no_progress_streak >= 2:
+                        if self.state.collect_strategy_level < 2:
+                            self.state.collect_strategy_level += 1
+                            self.state.no_progress_streak = 0
+                            _print(f"  [yellow]No progress x2 — strategy upgrade to level {self.state.collect_strategy_level}[/]")
+                            self.trace.log(
+                                stage=stage.value, agent=agent.name,
+                                action="strategy_upgrade",
+                                meta={"level": self.state.collect_strategy_level},
+                            )
+                        else:
+                            _print("  [yellow]No progress and max strategy — degrade-completing[/]")
+                            self._degrade_complete(result.message)
+                            continue
+
+                    self.state.sources_hash = new_src_hash
+                    self.state.claims_hash = new_claims_hash
+                    self.state.coverage_vector = self._compute_coverage_vector()
+                    self.state.collect_rounds += 1
+                    self.state.rollback_history.append({
+                        "round": self.state.collect_rounds,
+                        "reason": rollback_reason,
+                        "from_stage": stage.value,
+                        "sources_hash": new_src_hash,
+                        "claims_hash": new_claims_hash,
+                        "strategy_level": self.state.collect_strategy_level,
+                    })
+
                 _print(f"  [yellow]Rollback → {rollback_target.value}: {result.message}[/]")
                 self.trace.log(
                     stage=stage.value,
                     agent=agent.name,
                     action="rollback",
                     output_summary=f"Rolling back to {rollback_target.value}",
+                    meta={
+                        "reason": rollback_reason,
+                        "collect_rounds": self.state.collect_rounds,
+                        "strategy_level": self.state.collect_strategy_level,
+                        "no_progress_streak": self.state.no_progress_streak,
+                    },
                 )
                 self.state.stage = rollback_target
                 if rollback_target in self.state.completed_stages:
@@ -272,8 +346,46 @@ class Orchestrator:
             )
             return None
 
+        if self.state.collect_rounds >= self.config.max_collect_rounds:
+            _print(f"  [yellow]Max collect rounds ({self.config.max_collect_rounds}) reached during refinement — proceeding[/]")
+            self._degrade_complete(f"coverage {coverage:.0%} below threshold")
+            return None
+
+        new_src_hash = self._compute_sources_hash()
+        new_claims_hash = self._compute_claims_hash()
+        has_progress = (
+            new_src_hash != self.state.sources_hash
+            or new_claims_hash != self.state.claims_hash
+        )
+        if has_progress:
+            self.state.no_progress_streak = 0
+        else:
+            self.state.no_progress_streak += 1
+
+        if self.state.no_progress_streak >= 2:
+            if self.state.collect_strategy_level < 2:
+                self.state.collect_strategy_level += 1
+                self.state.no_progress_streak = 0
+            else:
+                self._degrade_complete(f"coverage {coverage:.0%}, no progress")
+                return None
+
+        self.state.sources_hash = new_src_hash
+        self.state.claims_hash = new_claims_hash
+        self.state.coverage_vector = self._compute_coverage_vector()
+
         self.state.refinement_count += 1
         self.state.collect_rounds += 1
+
+        self.state.rollback_history.append({
+            "round": self.state.collect_rounds,
+            "reason": "coverage_insufficient",
+            "from_stage": "READ",
+            "sources_hash": new_src_hash,
+            "claims_hash": new_claims_hash,
+            "strategy_level": self.state.collect_strategy_level,
+        })
+
         self.trace.log(
             stage="ORCHESTRATOR",
             action="plan.refine",
@@ -283,9 +395,10 @@ class Orchestrator:
                 "threshold": plan.acceptance_threshold,
                 "refinement_count": self.state.refinement_count,
                 "collect_rounds": self.state.collect_rounds,
+                "strategy_level": self.state.collect_strategy_level,
             },
         )
-        _print(f"  [yellow]Plan refine: coverage {coverage:.0%}, rolling back to COLLECT[/]")
+        _print(f"  [yellow]Plan refine: coverage {coverage:.0%}, rolling back to COLLECT (round {self.state.collect_rounds})[/]")
 
         self.state.stage = Stage.COLLECT
         if Stage.COLLECT in self.state.completed_stages:
@@ -294,6 +407,136 @@ class Orchestrator:
             self.state.completed_stages.remove(Stage.READ)
         save_state(self.state, self.run_dir)
         return "refinement"
+
+    def _compute_sources_hash(self) -> str:
+        sources_path = self.run_dir / "sources.jsonl"
+        if not sources_path.exists():
+            return ""
+        content = sources_path.read_bytes()
+        return hashlib.sha256(content).hexdigest()[:16]
+
+    def _compute_claims_hash(self) -> str:
+        notes_dir = self.run_dir / "notes"
+        if not notes_dir.exists():
+            return ""
+        parts: list[str] = []
+        for f in sorted(notes_dir.glob("*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                for c in data.get("claims", []):
+                    parts.append(c.get("claim_id", "") + ":" + c.get("text", "")[:60])
+            except Exception:
+                continue
+        combined = "|".join(parts)
+        return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+    def _compute_coverage_vector(self) -> dict[str, int]:
+        plan_path = self.run_dir / "plan.json"
+        if not plan_path.exists():
+            return {}
+        plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+        rq_counts: dict[str, int] = {rq.rq_id: 0 for rq in plan.research_questions}
+        notes_dir = self.run_dir / "notes"
+        if notes_dir.exists():
+            for f in notes_dir.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    notes = SourceNotes.model_validate(data)
+                    for claim in notes.claims:
+                        for rq_id in claim.supports_rq:
+                            if rq_id in rq_counts:
+                                rq_counts[rq_id] += 1
+                except Exception:
+                    continue
+        return rq_counts
+
+    def _classify_rollback_reason(self, message: str) -> str:
+        lower = message.lower()
+        if "evidence" in lower or "lack" in lower or "insufficient" in lower:
+            return "evidence_gap"
+        if "coverage" in lower:
+            return "coverage_insufficient"
+        if "quality" in lower:
+            return "source_quality"
+        if "conflict" in lower:
+            return "conflict"
+        if "diversity" in lower or "domination" in lower or "dominates" in lower:
+            return "source_domination"
+        return "other"
+
+    def _degrade_complete(self, reason: str) -> None:
+        """Allow pipeline to finish with evidence gaps marked as incomplete."""
+        cov = self._compute_coverage_vector()
+        plan_path = self.run_dir / "plan.json"
+        incomplete: list[str] = []
+        if plan_path.exists():
+            plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+            for rq in plan.research_questions:
+                if cov.get(rq.rq_id, 0) < self.config.min_claims_per_rq:
+                    incomplete.append(rq.rq_id)
+
+        self.state.incomplete_sections = incomplete
+        self.trace.log(
+            stage="ORCHESTRATOR",
+            action="degrade_complete",
+            output_summary=f"Degrading: {len(incomplete)} sections incomplete, reason: {reason}",
+            meta={
+                "incomplete_sections": incomplete,
+                "collect_rounds": self.state.collect_rounds,
+                "reason": reason,
+            },
+        )
+        save_state(self.state, self.run_dir)
+
+    def _build_diagnostics(self) -> dict:
+        diagnostics: dict = {
+            "coverage_vector": self.state.coverage_vector,
+        }
+
+        qa_report_path = self.run_dir / "qa_report.json"
+        if qa_report_path.exists():
+            try:
+                qa_data = json.loads(qa_report_path.read_text(encoding="utf-8"))
+                diagnostics["bucket_coverage_rate"] = qa_data.get("bucket_coverage_rate", 1.0)
+                diagnostics["relevance_avg"] = qa_data.get("relevance_avg", 1.0)
+                diagnostics["unsupported_rate"] = 0.0
+                for check in qa_data.get("checks", []):
+                    if check.get("check") == "unsupported_claim_rate":
+                        diagnostics["unsupported_rate"] = check.get("value", 0)
+                    if check.get("check") == "source_domination" and not check.get("passed"):
+                        diagnostics["domination_issues"] = check.get("issues", [])
+                diagnostics["conflict_count"] = 0
+                for check in qa_data.get("checks", []):
+                    if check.get("check") == "conflict_scan":
+                        diagnostics["conflict_count"] = check.get("value", 0)
+            except Exception:
+                pass
+
+        plan_path = self.run_dir / "plan.json"
+        if plan_path.exists():
+            try:
+                plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+                diagnostics["coverage_checklist"] = plan.coverage_checklist
+            except Exception:
+                pass
+
+        notes_dir = self.run_dir / "notes"
+        if notes_dir.exists():
+            lq = 0
+            total = 0
+            for f in notes_dir.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    total += 1
+                    flags = data.get("quality", {}).get("noise_flags", [])
+                    if "low_quality" in flags or "low_relevance" in flags:
+                        lq += 1
+                except Exception:
+                    continue
+            if total > 0:
+                diagnostics["low_quality_rate"] = lq / total
+
+        return diagnostics
 
     def _ensure_dirs(self) -> None:
         for sub in ["notes", "code", "code/logs", "artifacts", "downloads"]:

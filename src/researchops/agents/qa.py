@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from researchops.agents.base import AgentBase, RunContext
-from researchops.models import AgentResult, Source, SourceNotes, Stage
+from researchops.models import AgentResult, PlanOutput, Source, SourceNotes, Stage
 from researchops.tools.parse_doc import NOISE_PATTERNS
 
 
@@ -23,7 +23,7 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union)
 
 
-_SOURCE_CAP = 0.4
+_SOURCE_CAP = 0.35
 
 
 class QAAgent(AgentBase):
@@ -73,15 +73,20 @@ class QAAgent(AgentBase):
         hard_issues.extend(sq_issues)
         checks.append({"check": "source_quality", "passed": len(sq_issues) == 0, "issues": sq_issues})
 
-        if hard_issues and ctx.state.retry_counts.get("qa", 0) < 1:
+        at_max_rounds = ctx.state.collect_rounds >= ctx.config.max_collect_rounds
+
+        if hard_issues and ctx.state.retry_counts.get("qa", 0) < 1 and not at_max_rounds:
             ctx.state.retry_counts["qa"] = ctx.state.retry_counts.get("qa", 0) + 1
             rollback_target = self._route_quality_rollback(hard_issues, ctx.run_dir, allow_net=ctx.config.allow_net)
+
+            next_actions = self._compute_next_actions(hard_issues, all_notes, sources, ctx)
+
             ctx.trace.log(
                 stage="QA", agent=self.name, action="qa.rollback_decision",
                 output_summary=f"Quality fail -> {rollback_target.value}",
-                meta={"hard_issues": hard_issues, "target": rollback_target.value},
+                meta={"hard_issues": hard_issues, "target": rollback_target.value, "next_actions": next_actions},
             )
-            self._write_qa_report(ctx.run_dir, checks)
+            self._write_qa_report(ctx.run_dir, checks, next_actions=next_actions)
             return AgentResult(
                 success=False,
                 message=f"QA quality fail: {'; '.join(hard_issues)}",
@@ -100,6 +105,13 @@ class QAAgent(AgentBase):
         if diversity["unique_domains"] < 1:
             issues.append("No source diversity")
 
+        domination_issues = self._check_source_domination(report, sources)
+        if domination_issues:
+            issues.extend(domination_issues)
+            checks.append({"check": "source_domination", "passed": False, "issues": domination_issues})
+        else:
+            checks.append({"check": "source_domination", "passed": True, "issues": []})
+
         traceability = self._check_traceability(ctx.run_dir, all_notes)
         unsupported_rate = traceability.get("unsupported_rate", 0.0)
         is_deep = ctx.config.mode.value == "deep" if hasattr(ctx.config.mode, "value") else False
@@ -112,6 +124,35 @@ class QAAgent(AgentBase):
         if unsupported_assertions:
             issues.append(f"{len(unsupported_assertions)} assertions without citation markers")
 
+        evidence_gaps = self._detect_evidence_gaps(report)
+        if evidence_gaps:
+            issues.append(f"{len(evidence_gaps)} sections with evidence gaps")
+            checks.append({"check": "evidence_gaps", "passed": False, "value": evidence_gaps})
+        else:
+            checks.append({"check": "evidence_gaps", "passed": True, "value": []})
+
+        bucket_cov_rate = self._check_bucket_coverage(ctx.run_dir, all_notes, ctx)
+        bucket_threshold = ctx.config.bucket_coverage_threshold
+        checks.append({
+            "check": "bucket_coverage",
+            "passed": bucket_cov_rate >= bucket_threshold,
+            "value": bucket_cov_rate,
+            "threshold": bucket_threshold,
+        })
+        if bucket_cov_rate < bucket_threshold:
+            issues.append(f"Bucket coverage {bucket_cov_rate:.0%} below threshold {bucket_threshold:.0%}")
+
+        relevance_avg = self._check_relevance_avg(all_notes)
+        rel_threshold = ctx.config.relevance_threshold
+        checks.append({
+            "check": "relevance_avg",
+            "passed": relevance_avg >= rel_threshold,
+            "value": relevance_avg,
+            "threshold": rel_threshold,
+        })
+        if relevance_avg < rel_threshold:
+            issues.append(f"Average relevance {relevance_avg:.2f} below threshold {rel_threshold:.2f}")
+
         conflicts = self._conflict_scan(all_notes)
         conflicts_path = ctx.run_dir / "qa_conflicts.json"
         conflicts_path.write_text(json.dumps(conflicts, indent=2), encoding="utf-8")
@@ -122,9 +163,13 @@ class QAAgent(AgentBase):
         if conflicts.get("conflicts"):
             issues.append(f"{len(conflicts['conflicts'])} claim conflicts detected")
 
-        self._write_qa_report(ctx.run_dir, checks)
+        next_actions = self._compute_next_actions(issues, all_notes, sources, ctx) if issues else {}
+        self._write_qa_report(
+            ctx.run_dir, checks, next_actions=next_actions,
+            bucket_coverage_rate=bucket_cov_rate, relevance_avg=relevance_avg,
+        )
 
-        rollback_target = self._determine_rollback(issues, traceability, conflicts, ctx)
+        rollback_target = self._determine_rollback(issues, traceability, conflicts, domination_issues, evidence_gaps, ctx)
 
         ctx.trace.log(
             stage="QA", agent=self.name, action="complete",
@@ -140,18 +185,18 @@ class QAAgent(AgentBase):
         )
 
         soft_issues = [i for i in issues if i not in hard_issues]
-        if soft_issues and ctx.state.retry_counts.get("qa", 0) < 1:
-            ctx.state.retry_counts["qa"] = ctx.state.retry_counts.get("qa", 0) + 1
-            ctx.trace.log(
-                stage="QA", agent=self.name, action="qa.rollback_decision",
-                output_summary=f"Rolling back to {rollback_target.value}",
-                meta={"issues": soft_issues, "target": rollback_target.value},
-            )
-            return AgentResult(
-                success=False,
-                message=f"QA issues: {'; '.join(issues)}",
-                rollback_to=rollback_target,
-            )
+        if soft_issues and ctx.state.retry_counts.get("qa", 0) < 1 and not at_max_rounds and self._should_allow_rollback(ctx):
+                ctx.state.retry_counts["qa"] = ctx.state.retry_counts.get("qa", 0) + 1
+                ctx.trace.log(
+                    stage="QA", agent=self.name, action="qa.rollback_decision",
+                    output_summary=f"Rolling back to {rollback_target.value}",
+                    meta={"issues": soft_issues, "target": rollback_target.value},
+                )
+                return AgentResult(
+                    success=False,
+                    message=f"QA issues: {'; '.join(issues)}",
+                    rollback_to=rollback_target,
+                )
 
         return AgentResult(
             success=True,
@@ -165,8 +210,137 @@ class QAAgent(AgentBase):
             },
         )
 
-    def _write_qa_report(self, run_dir: Path, checks: list[dict]) -> None:
-        report = {"checks": checks, "all_passed": all(c.get("passed", True) for c in checks)}
+    def _should_allow_rollback(self, ctx: RunContext) -> bool:
+        history = ctx.state.rollback_history
+        if len(history) < 2:
+            return True
+        last_two = history[-2:]
+        return not (
+            last_two[0].get("sources_hash") == last_two[1].get("sources_hash")
+            and last_two[0].get("claims_hash") == last_two[1].get("claims_hash")
+        )
+
+    def _check_bucket_coverage(
+        self, run_dir: Path, all_notes: dict[str, SourceNotes], ctx: RunContext,
+    ) -> float:
+        plan_path = run_dir / "plan.json"
+        if not plan_path.exists():
+            return 1.0
+        plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+        checklist = plan.coverage_checklist
+        if not checklist:
+            return 1.0
+
+        bucket_source_counts: dict[str, int] = {}
+        for _sid, notes in all_notes.items():
+            for bid in notes.bucket_hits:
+                bucket_source_counts[bid] = bucket_source_counts.get(bid, 0) + 1
+
+        covered = 0
+        for bucket in checklist:
+            bid = bucket.get("bucket_id", "")
+            min_sources = bucket.get("min_sources", 1)
+            if bucket_source_counts.get(bid, 0) >= min_sources:
+                covered += 1
+
+        return covered / max(1, len(checklist))
+
+    def _check_relevance_avg(self, all_notes: dict[str, SourceNotes]) -> float:
+        if not all_notes:
+            return 0.0
+        total = sum(n.relevance_score for n in all_notes.values())
+        return total / len(all_notes)
+
+    def _compute_next_actions(
+        self, issues: list[str], all_notes: dict[str, SourceNotes],
+        sources: list[Source], ctx: RunContext,
+    ) -> dict:
+        queries: list[str] = []
+        categories: list[str] = []
+        target_count = ctx.config.target_sources_per_rq
+        bucket_gaps: list[dict] = []
+
+        issue_text = " ".join(issues).lower()
+
+        if "evidence gap" in issue_text or "insufficient" in issue_text:
+            queries.append(f"{ctx.config.topic} survey overview")
+            queries.append(f"{ctx.config.topic} recent advances challenges")
+
+        if "diversity" in issue_text or "domination" in issue_text or "dominates" in issue_text:
+            queries.append(f"{ctx.config.topic} alternative approaches")
+            queries.append(f"{ctx.config.topic} comparison benchmark")
+
+        if "quality" in issue_text:
+            categories.append("cs.LG")
+            categories.append("cs.AI")
+
+        if "bucket coverage" in issue_text:
+            plan_path = ctx.run_dir / "plan.json"
+            if plan_path.exists():
+                plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+                bucket_source_counts: dict[str, int] = {}
+                for _sid, notes in all_notes.items():
+                    for bid in notes.bucket_hits:
+                        bucket_source_counts[bid] = bucket_source_counts.get(bid, 0) + 1
+                for bucket in plan.coverage_checklist:
+                    bid = bucket.get("bucket_id", "")
+                    min_src = bucket.get("min_sources", 1)
+                    actual = bucket_source_counts.get(bid, 0)
+                    if actual < min_src:
+                        bname = bucket.get("bucket_name", bid)
+                        bucket_gaps.append({"bucket_id": bid, "bucket_name": bname, "need": min_src - actual})
+                        queries.append(f"{ctx.config.topic} {bname}")
+
+        if "relevance" in issue_text:
+            queries.append(f"{ctx.config.topic} core concepts foundations")
+
+        return {
+            "queries": queries,
+            "categories": categories,
+            "target_sources_count": target_count,
+            "bucket_gaps": bucket_gaps,
+        }
+
+    def _detect_evidence_gaps(self, report: str) -> list[str]:
+        gaps = []
+        sections = re.split(r"^##\s+", report, flags=re.MULTILINE)
+        for sec in sections[1:]:
+            heading = sec.split("\n", 1)[0].strip()
+            lower = sec.lower()
+            if "evidence gap" in lower or "evidence insufficient" in lower or "证据不足" in lower or "证据缺口" in lower:
+                gaps.append(heading)
+        return gaps
+
+    def _check_source_domination(self, report: str, sources: list[Source]) -> list[str]:
+        issues: list[str] = []
+        sections = re.split(r"^##\s+", report, flags=re.MULTILINE)
+        for sec in sections[1:]:
+            markers = re.findall(r"\[@(\w+)\]", sec)
+            if len(markers) < 3:
+                continue
+            mc = Counter(markers).most_common(1)
+            if mc:
+                dominant_id, dominant_count = mc[0]
+                ratio = dominant_count / len(markers)
+                if ratio > _SOURCE_CAP:
+                    heading = sec.split("\n", 1)[0].strip()
+                    issues.append(f"Source {dominant_id} dominates section '{heading}' ({ratio:.0%})")
+        return issues
+
+    def _write_qa_report(
+        self, run_dir: Path, checks: list[dict],
+        next_actions: dict | None = None,
+        bucket_coverage_rate: float = 0.0,
+        relevance_avg: float = 0.0,
+    ) -> None:
+        report: dict = {
+            "checks": checks,
+            "all_passed": all(c.get("passed", True) for c in checks),
+            "bucket_coverage_rate": round(bucket_coverage_rate, 3),
+            "relevance_avg": round(relevance_avg, 3),
+        }
+        if next_actions:
+            report["next_actions"] = next_actions
         (run_dir / "qa_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     def _source_quality_check(self, ctx: RunContext) -> list[str]:
@@ -179,8 +353,6 @@ class QAAgent(AgentBase):
         if ratio > 0.50:
             issues.append(f"source_quality: {ratio:.0%} of sources are low quality")
         return issues
-
-    # ── Quality detectors (hard fail) ────────────────────────────────
 
     _CODE_GARBAGE_KEYWORDS = [
         "function(", "padding", "px;", "rgb(", "rgba(",
@@ -254,21 +426,6 @@ class QAAgent(AgentBase):
                 issues.append("paste_detector: consecutive paragraphs highly similar (Jaccard>0.85)")
                 break
 
-        sections = re.split(r"^##\s+", report, flags=re.MULTILINE)
-        for sec in sections[1:]:
-            markers = re.findall(r"\[@(\w+)\]", sec)
-            if len(markers) < 3:
-                continue
-            mc = Counter(markers).most_common(1)
-            if mc:
-                dominant_id, dominant_count = mc[0]
-                ratio = dominant_count / len(markers)
-                sec_paras = [p.strip() for p in sec.split("\n\n") if len(p.strip()) > 50 and not p.strip().startswith("#")]
-                avg_len = sum(len(p) for p in sec_paras) / max(1, len(sec_paras)) if sec_paras else 0
-                if ratio > _SOURCE_CAP and avg_len > 300:
-                    issues.append(f"paste_detector: source {dominant_id} dominates section ({ratio:.0%}, avg {avg_len:.0f} chars)")
-                    break
-
         return issues
 
     def _redundancy_detector(self, report: str) -> list[str]:
@@ -309,8 +466,6 @@ class QAAgent(AgentBase):
             pass
 
         return Stage.WRITE
-
-    # ── Existing checks ──────────────────────────────────────────────
 
     def _check_citation_coverage(self, report: str) -> float:
         paragraphs = [p.strip() for p in report.split("\n\n") if len(p.strip()) > 50]
@@ -354,6 +509,8 @@ class QAAgent(AgentBase):
 
         unsupported = 0
         for entry in entries:
+            if entry.get("evidence_gap"):
+                continue
             has_valid_ref = False
             for cid in entry.get("claim_ids", []):
                 if cid in known_claim_ids:
@@ -380,6 +537,9 @@ class QAAgent(AgentBase):
                 and not stripped.startswith("-")
                 and not stripped.startswith("*")
                 and not re.search(r"\[@\w+\]", stripped)
+                and "evidence gap" not in stripped.lower()
+                and "证据缺口" not in stripped
+                and "证据不足" not in stripped
             ):
                 unsupported.append(stripped[:80])
         return unsupported
@@ -412,9 +572,22 @@ class QAAgent(AgentBase):
         return {"conflicts": conflicts, "total_rqs_scanned": len(rq_claims)}
 
     def _determine_rollback(
-        self, issues: list[str], traceability: dict, conflicts: dict, ctx: RunContext
+        self, issues: list[str], traceability: dict, conflicts: dict,
+        domination_issues: list[str], evidence_gaps: list[str], ctx: RunContext,
     ) -> Stage:
-        issue_text = " ".join(issues).lower()
+        if evidence_gaps and ctx.config.allow_net:
+            ctx.trace.log(
+                stage="QA", agent=self.name, action="qa.rollback_decision",
+                output_summary="Evidence gaps detected -> COLLECT",
+            )
+            return Stage.COLLECT
+
+        if domination_issues and ctx.config.allow_net:
+            ctx.trace.log(
+                stage="QA", agent=self.name, action="qa.rollback_decision",
+                output_summary="Source domination detected -> COLLECT for diversity",
+            )
+            return Stage.COLLECT
 
         if conflicts.get("conflicts") and ctx.config.allow_net:
             ctx.trace.log(
@@ -423,6 +596,7 @@ class QAAgent(AgentBase):
             )
             return Stage.COLLECT
 
+        issue_text = " ".join(issues).lower()
         if "unsupported claim rate" in issue_text:
             return Stage.READ
         if "no source diversity" in issue_text:

@@ -30,6 +30,7 @@ class PlanOutput(BaseModel):
     research_questions: list[ResearchQuestion]
     outline: list[OutlineSection]
     acceptance_threshold: float = 0.7
+    coverage_checklist: list[dict] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now)
 
 
@@ -52,6 +53,8 @@ class Source(BaseModel):
     local_path: str = ""
     hash: str = ""
     source_type_detail: str = ""
+    collect_round: int = 1
+    query_id: str = ""
 
 
 # ── Claims / Notes ───────────────────────────────────────────────────
@@ -75,6 +78,8 @@ class SourceNotes(BaseModel):
     limitations: str = ""
     bibliographic: dict = Field(default_factory=dict)
     quality: dict = Field(default_factory=dict)
+    relevance_score: float = 0.0
+    bucket_hits: list[str] = Field(default_factory=list)
 
 
 # ── State / Checkpoint ───────────────────────────────────────────────
@@ -116,6 +121,15 @@ class StateSnapshot(BaseModel):
     updated_at: str = Field(default_factory=_now)
     refinement_count: int = 0
     collect_rounds: int = 1
+    sources_hash: str = ""
+    claims_hash: str = ""
+    coverage_vector: dict[str, int] = Field(default_factory=dict)
+    rollback_history: list[dict[str, Any]] = Field(default_factory=list)
+    incomplete_sections: list[str] = Field(default_factory=list)
+    collect_strategy_level: int = 0
+    no_progress_streak: int = 0
+    write_rounds: int = 0
+    bucket_coverage: dict[str, dict] = Field(default_factory=dict)
 
 
 # ── Trace ─────────────────────────────────────────────────────────────
@@ -131,6 +145,18 @@ class TraceEvent(BaseModel):
     duration_ms: float = 0
     error: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Decision (Supervisor) ────────────────────────────────────────────
+
+class Decision(BaseModel):
+    decision_id: str = ""
+    stage: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    action_plan: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = 0.0
+    policy_version: str = "1.1.0"
+    ts: str = Field(default_factory=_now)
 
 
 # ── Eval ──────────────────────────────────────────────────────────────
@@ -156,6 +182,13 @@ class EvalResult(BaseModel):
     papers_per_rq: float = 0.0
     low_quality_source_rate: float = 0.0
     section_nonempty_rate: float = 0.0
+    incomplete_sections: list[str] = Field(default_factory=list)
+    collect_rounds_total: int = 1
+    sources_per_rq: dict[str, int] = Field(default_factory=dict)
+    max_rollback_used: bool = False
+    bucket_coverage_rate: float = 0.0
+    relevance_avg: float = 0.0
+    decision_count: int = 0
 
 
 # ── Agent Result ──────────────────────────────────────────────────────
