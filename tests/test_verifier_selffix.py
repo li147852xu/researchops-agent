@@ -65,10 +65,12 @@ def test_selffix_triggers_on_failure(tmp_run_dir: Path):
     script = code_dir / "broken.py"
     script.write_text("import bogus_module_999\nprint('hi')\n", encoding="utf-8")
 
+    from researchops.reasoning.none import NoneReasoner
     from researchops.trace import TraceLogger
 
     class FakeCtx:
         trace = TraceLogger(tmp_run_dir / "trace2.jsonl")
+        reasoner = NoneReasoner()
 
     verifier = VerifierAgent()
     verifier._fix_script(script, "ModuleNotFoundError: No module named 'bogus_module_999'", FakeCtx())

@@ -62,6 +62,8 @@ class Claim(BaseModel):
     supports_rq: list[str] = Field(default_factory=list)
     category: str = ""
     evidence_location: str = ""
+    claim_type: str = ""
+    polarity: str = "neutral"
 
 
 class SourceNotes(BaseModel):
@@ -109,6 +111,8 @@ class StateSnapshot(BaseModel):
     config_snapshot: dict[str, Any] = Field(default_factory=dict)
     started_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
+    refinement_count: int = 0
+    collect_rounds: int = 1
 
 
 # ── Trace ─────────────────────────────────────────────────────────────
@@ -138,7 +142,14 @@ class EvalResult(BaseModel):
     unsupported_claim_rate: float = 0.0
     cache_hit_rate: float = 0.0
     llm_enabled: bool = False
+    estimated_tokens: int = 0
     estimated_cost_usd: float = 0.0
+    estimate_method: str = "none"
+    conflict_count: int = 0
+    plan_refinement_count: int = 0
+    collect_rounds: int = 1
+    artifacts_count: int = 0
+    llm_provider_label: str = ""
 
 
 # ── Agent Result ──────────────────────────────────────────────────────

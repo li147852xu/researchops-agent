@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -29,10 +30,12 @@ def run(
     sandbox: SandboxBackend = typer.Option(
         SandboxBackend.SUBPROCESS, "--sandbox", help="Sandbox backend"
     ),
-    llm: str = typer.Option("none", "--llm", help="LLM backend: none, openai, anthropic"),
+    llm: str = typer.Option("none", "--llm", help="LLM backend: none, openai, openai_compat, anthropic"),
     llm_model: str = typer.Option("", "--llm-model", help="LLM model name"),
     llm_base_url: str = typer.Option("", "--llm-base-url", help="LLM API base URL"),
     llm_api_key: str = typer.Option("", "--llm-api-key", help="LLM API key (or use env var)"),
+    llm_provider_label: str = typer.Option("", "--llm-provider-label", help="Provider label for trace/eval (e.g. deepseek, openrouter)"),
+    llm_headers: str = typer.Option("", "--llm-headers", help="Extra request headers as JSON string"),
     seed: int = typer.Option(42, "--seed", help="Random seed"),
 ) -> None:
     """Run a full research pipeline on the given topic."""
@@ -47,10 +50,21 @@ def run(
     domains = [d.strip() for d in net_allowlist.split(",") if d.strip()] if net_allowlist else []
 
     api_key = llm_api_key
-    if not api_key and llm == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-    elif not api_key and llm == "anthropic":
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        if llm in ("openai", "openai_compat"):
+            for _env in ("OPENAI_API_KEY", "LLM_API_KEY", "DEEPSEEK_API_KEY"):
+                api_key = os.environ.get(_env, "")
+                if api_key:
+                    break
+        elif llm == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
+
+    if llm_headers:
+        try:
+            json.loads(llm_headers)
+        except json.JSONDecodeError as exc:
+            console.print("[red]--llm-headers must be valid JSON[/]")
+            raise SystemExit(1) from exc
 
     config = RunConfig(
         topic=topic,
@@ -66,26 +80,39 @@ def run(
         llm_model=llm_model,
         llm_base_url=llm_base_url,
         llm_api_key=api_key,
+        llm_provider_label=llm_provider_label,
+        llm_headers=llm_headers,
         seed=seed,
     )
 
     console.print(f"[bold]ResearchOps Agent[/] — run [cyan]{run_id}[/]")
     console.print(f"  Topic: {topic}")
     console.print(
-        f"  Mode: {mode.value} | Net: {net_enabled} | Sandbox: {sandbox.value} | LLM: {llm}\n"
+        f"  Mode: {mode.value} | Net: {net_enabled} | Sandbox: {sandbox.value} | LLM: {llm}"
     )
+
+    if llm != "none":
+        label = llm_provider_label or "auto"
+        base = llm_base_url or "(default)"
+        model_name = llm_model or "(default)"
+        has_key = "yes" if api_key else "NO KEY"
+        console.print(f"  LLM provider={label} base_url={base} model={model_name} key={has_key}")
+    else:
+        console.print("  LLM disabled (rule-based mode)")
+    console.print()
 
     orch = Orchestrator(config, run_dir)
     orch.run()
 
     console.print("\n[bold]Computing evaluation...[/]")
-    eval_result = compute_eval(run_dir, llm_enabled=llm != "none")
+    eval_result = compute_eval(run_dir, config=config)
     console.print(f"  Citation coverage: {eval_result.citation_coverage:.1%}")
     console.print(f"  Source diversity: {eval_result.source_diversity}")
     console.print(f"  Reproduction rate: {eval_result.reproduction_rate:.1%}")
     console.print(f"  Unsupported claim rate: {eval_result.unsupported_claim_rate:.1%}")
+    console.print(f"  Conflicts: {eval_result.conflict_count} | Refinements: {eval_result.plan_refinement_count}")
     console.print(f"  Tool calls: {eval_result.tool_calls} | Cache hit rate: {eval_result.cache_hit_rate:.1%}")
-    console.print(f"  Latency: {eval_result.latency_sec}s")
+    console.print(f"  Latency: {eval_result.latency_sec}s | Artifacts: {eval_result.artifacts_count}")
 
 
 @app.command()
@@ -129,6 +156,7 @@ def eval_cmd(
     console.print(f"  Source diversity: {result.source_diversity}")
     console.print(f"  Reproduction rate: {result.reproduction_rate:.1%}")
     console.print(f"  Unsupported claim rate: {result.unsupported_claim_rate:.1%}")
+    console.print(f"  Conflicts: {result.conflict_count} | Refinements: {result.plan_refinement_count}")
     console.print(f"  Tool calls: {result.tool_calls} | Cache hit rate: {result.cache_hit_rate:.1%}")
     console.print(f"  Latency: {result.latency_sec}s | Steps: {result.steps}")
     console.print(f"\n[green]Written to {run_dir / 'eval.json'}[/]")

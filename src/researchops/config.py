@@ -27,10 +27,12 @@ class RunConfig(BaseModel):
     net_allowlist: list[str] = Field(default_factory=list)
     sandbox: SandboxBackend = SandboxBackend.SUBPROCESS
     run_dir: Path = Field(default=Path("runs"))
-    llm: Literal["none", "openai", "anthropic"] = "none"
+    llm: Literal["none", "openai", "openai_compat", "anthropic"] = "none"
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
+    llm_provider_label: str = ""
+    llm_headers: str = ""
     seed: int = 42
 
     @property
@@ -44,3 +46,7 @@ class RunConfig(BaseModel):
     @property
     def verify_timeout(self) -> int:
         return 120 if self.mode == RunMode.DEEP else 30
+
+    @property
+    def max_refinements(self) -> int:
+        return 2 if self.mode == RunMode.DEEP else 1

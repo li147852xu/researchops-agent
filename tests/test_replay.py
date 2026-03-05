@@ -46,3 +46,31 @@ def test_replay_json_output(tmp_run_dir: Path):
     assert isinstance(parsed, list)
     assert len(parsed) == 2
     assert parsed[0]["action"] == "start"
+
+
+def test_replay_json_v03_fields(tmp_run_dir: Path):
+    """v0.3.0 replay --json output should contain structured per-event fields."""
+    trace_path = tmp_run_dir / "trace.jsonl"
+    logger = TraceLogger(trace_path)
+    logger.log(stage="PLAN", agent="planner", action="start")
+    logger.log(stage="COLLECT", tool="web_search", action="invoke", input_summary="q=test", duration_ms=50)
+    logger.log(stage="COLLECT", tool="web_search", action="cache_hit", input_summary="q=test")
+    logger.log(stage="ORCHESTRATOR", action="run_complete", duration_ms=100)
+
+    import io
+    from contextlib import redirect_stdout
+
+    from researchops.orchestrator import replay_run
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        replay_run(tmp_run_dir, from_step=0, no_tools=False, json_output=True)
+    output = buf.getvalue()
+
+    data = json.loads(output)
+    assert isinstance(data, list)
+    assert all("step" in e for e in data)
+    assert all("stage" in e for e in data)
+    assert all("outcome" in e for e in data)
+    cache_events = [e for e in data if e.get("cache_hit")]
+    assert len(cache_events) >= 1

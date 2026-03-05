@@ -29,6 +29,9 @@ htmlcov/
 # Runtime artifacts
 runs/
 
+# OS
+.DS_Store
+
 # Environment
 .env
 .env.local

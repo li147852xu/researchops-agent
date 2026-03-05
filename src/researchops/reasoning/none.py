@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import re
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from researchops.reasoning.base import ReasonerBase
+
+if TYPE_CHECKING:
+    from researchops.trace import TraceLogger
 
 
 class NoneReasoner(ReasonerBase):
@@ -17,6 +21,7 @@ class NoneReasoner(ReasonerBase):
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> BaseModel:
         t0 = time.monotonic()
         fields = schema.model_fields
@@ -44,6 +49,7 @@ class NoneReasoner(ReasonerBase):
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> str:
         t0 = time.monotonic()
         result = self._template_response(prompt, context)

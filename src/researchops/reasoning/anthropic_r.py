@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import os
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from researchops.reasoning.base import ReasonerBase
+
+if TYPE_CHECKING:
+    from researchops.trace import TraceLogger
 
 
 class AnthropicReasoner(ReasonerBase):
@@ -19,7 +23,7 @@ class AnthropicReasoner(ReasonerBase):
         base_url: str = "https://api.anthropic.com",
     ) -> None:
         super().__init__()
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
         if not self.api_key:
             raise ValueError(
                 "Anthropic API key required. Set --llm-api-key or ANTHROPIC_API_KEY env var, "
@@ -28,12 +32,17 @@ class AnthropicReasoner(ReasonerBase):
         self.model = model
         self.base_url = base_url.rstrip("/")
 
+    @property
+    def is_llm(self) -> bool:
+        return True
+
     def complete_json(
         self,
         schema: type[BaseModel],
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> BaseModel:
         import httpx
 
@@ -79,6 +88,7 @@ class AnthropicReasoner(ReasonerBase):
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> str:
         import httpx
 

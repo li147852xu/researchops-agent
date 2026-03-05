@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "researchops"
-version = "0.2.0"
+version = "0.3.3"
 description = "Multi-agent research orchestration harness with plan/collect/read/verify/write/qa pipeline"
 readme = "README.md"
 license = "MIT"

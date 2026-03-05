@@ -3,16 +3,21 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from researchops.models import EvalResult, Source, TraceEvent
+from researchops.models import EvalResult, Source, StateSnapshot, TraceEvent
 from researchops.trace import TraceLogger
 
+if TYPE_CHECKING:
+    from researchops.config import RunConfig
 
-def compute_eval(run_dir: Path, *, llm_enabled: bool = False) -> EvalResult:
+
+def compute_eval(run_dir: Path, *, config: RunConfig | None = None, llm_enabled: bool = False) -> EvalResult:
     report_path = run_dir / "report.md"
     sources = _load_sources(run_dir)
     trace = TraceLogger(run_dir / "trace.jsonl")
     events = trace.read_all()
+    state = _load_state(run_dir)
 
     citation_cov = _citation_coverage(report_path)
     diversity = _source_diversity(sources)
@@ -22,6 +27,21 @@ def compute_eval(run_dir: Path, *, llm_enabled: bool = False) -> EvalResult:
     steps = _count_steps(events)
     unsupported = _unsupported_claim_rate(run_dir)
     cache_hit = _cache_hit_rate(events)
+    conflict_count = _count_conflicts(run_dir)
+    artifacts_count = _count_artifacts(run_dir)
+
+    is_llm = llm_enabled or (config is not None and config.llm != "none")
+    has_llm_calls = any(e.action in ("llm.call", "llm.result") for e in events)
+    is_llm = is_llm or has_llm_calls
+    provider_label = config.llm_provider_label if config else ""
+    if not provider_label:
+        for e in events:
+            if e.action == "llm.call" and e.meta.get("provider_label"):
+                provider_label = e.meta["provider_label"]
+                break
+
+    est_tokens = _estimate_tokens(events)
+    est_method = "token_count_from_api" if has_llm_calls else "none"
 
     result = EvalResult(
         citation_coverage=citation_cov,
@@ -32,8 +52,15 @@ def compute_eval(run_dir: Path, *, llm_enabled: bool = False) -> EvalResult:
         steps=steps,
         unsupported_claim_rate=unsupported,
         cache_hit_rate=cache_hit,
-        llm_enabled=llm_enabled,
+        llm_enabled=is_llm,
+        estimated_tokens=est_tokens,
         estimated_cost_usd=0.0,
+        estimate_method=est_method,
+        conflict_count=conflict_count,
+        plan_refinement_count=state.refinement_count if state else 0,
+        collect_rounds=state.collect_rounds if state else 1,
+        artifacts_count=artifacts_count,
+        llm_provider_label=provider_label,
     )
 
     eval_path = run_dir / "eval.json"
@@ -115,6 +142,32 @@ def _cache_hit_rate(events: list[TraceEvent]) -> float:
     return round(hits / invokes, 3)
 
 
+def _count_conflicts(run_dir: Path) -> int:
+    path = run_dir / "qa_conflicts.json"
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return len(data.get("conflicts", []))
+    except Exception:
+        return 0
+
+
+def _estimate_tokens(events: list[TraceEvent]) -> int:
+    total = 0
+    for e in events:
+        if e.action == "llm.result":
+            total += e.meta.get("tokens", 0)
+    return total
+
+
+def _count_artifacts(run_dir: Path) -> int:
+    art_dir = run_dir / "artifacts"
+    if not art_dir.exists():
+        return 0
+    return sum(1 for _ in art_dir.iterdir())
+
+
 def _load_sources(run_dir: Path) -> list[Source]:
     path = run_dir / "sources.jsonl"
     if not path.exists():
@@ -124,3 +177,13 @@ def _load_sources(run_dir: Path) -> list[Source]:
         if line.strip():
             sources.append(Source.model_validate(json.loads(line)))
     return sources
+
+
+def _load_state(run_dir: Path) -> StateSnapshot | None:
+    path = run_dir / "state.json"
+    if not path.exists():
+        return None
+    try:
+        return StateSnapshot.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        return None

@@ -4,8 +4,6 @@ import json
 import time
 from pathlib import Path
 
-from rich.console import Console
-
 from researchops.agents.base import AgentBase, RunContext
 from researchops.agents.collector import CollectorAgent
 from researchops.agents.planner import PlannerAgent
@@ -15,14 +13,23 @@ from researchops.agents.verifier import VerifierAgent
 from researchops.agents.writer import WriterAgent
 from researchops.checkpoint import advance_stage, load_state, save_state, should_skip
 from researchops.config import RunConfig, SandboxBackend
-from researchops.models import STAGE_ORDER, Stage, StateSnapshot
+from researchops.models import STAGE_ORDER, PlanOutput, SourceNotes, Stage, StateSnapshot
 from researchops.reasoning import create_reasoner
 from researchops.registry.builtin import register_builtin_tools
 from researchops.registry.manager import ToolRegistry
 from researchops.sandbox.proc import SubprocessSandbox
 from researchops.trace import TraceLogger
 
-console = Console()
+try:
+    from rich.console import Console
+    _console = Console()
+    def _print(msg: str) -> None:
+        _console.print(msg)
+except ImportError:
+    def _print(msg: str) -> None:
+        import re
+        print(re.sub(r"\[/?[a-z ]+\]", "", msg))
+
 
 _STAGE_AGENTS: dict[Stage, type[AgentBase]] = {
     Stage.PLAN: PlannerAgent,
@@ -66,7 +73,7 @@ class Orchestrator:
 
     def _build_sandbox(self) -> SubprocessSandbox:
         if self.config.sandbox == SandboxBackend.DOCKER:
-            console.print("[yellow]Docker sandbox not implemented, falling back to subprocess[/]")
+            _print("[yellow]Docker sandbox not implemented, falling back to subprocess[/]")
         return SubprocessSandbox()
 
     def _init_state(self) -> StateSnapshot:
@@ -95,16 +102,26 @@ class Orchestrator:
         self._ensure_dirs()
         t0 = time.monotonic()
         self.trace.log(stage="ORCHESTRATOR", action="run_start", input_summary=self.config.topic)
+        self.trace.log(
+            stage="ORCHESTRATOR",
+            action="llm_status",
+            meta={
+                "llm": self.config.llm,
+                "is_llm": self.reasoner.is_llm,
+                "provider_label": getattr(self.reasoner, "provider_label", "none"),
+                "model": getattr(self.reasoner, "model", "none"),
+            },
+        )
 
         pipeline = [s for s in STAGE_ORDER if s != Stage.DONE]
 
         for stage in pipeline:
             if should_skip(self.state, stage):
-                console.print(f"  [dim]Skipping {stage.value} (already completed)[/]")
+                _print(f"  [dim]Skipping {stage.value} (already completed)[/]")
                 continue
 
             if self.state.step >= self.config.max_steps:
-                console.print("[red]Max steps reached, stopping[/]")
+                _print("[red]Max steps reached, stopping[/]")
                 break
 
             self.state.stage = stage
@@ -114,7 +131,7 @@ class Orchestrator:
             agent = agent_cls()
             ctx = self._make_context()
 
-            console.print(f"  [bold cyan]▶ {stage.value}[/] ({agent.name})")
+            _print(f"  [bold cyan]▶ {stage.value}[/] ({agent.name})")
 
             try:
                 result = agent.execute(ctx)
@@ -125,15 +142,13 @@ class Orchestrator:
                     action="error",
                     error=str(exc),
                 )
-                console.print(f"  [red]Error in {stage.value}: {exc}[/]")
+                _print(f"  [red]Error in {stage.value}: {exc}[/]")
                 save_state(self.state, self.run_dir)
                 raise
 
             if result.rollback_to is not None:
                 rollback_target = result.rollback_to
-                console.print(
-                    f"  [yellow]Rollback → {rollback_target.value}: {result.message}[/]"
-                )
+                _print(f"  [yellow]Rollback → {rollback_target.value}: {result.message}[/]")
                 self.trace.log(
                     stage=stage.value,
                     agent=agent.name,
@@ -149,11 +164,16 @@ class Orchestrator:
                 save_state(self.state, self.run_dir)
                 return self.run()
 
+            if stage == Stage.READ:
+                refinement_result = self._check_plan_coverage(ctx)
+                if refinement_result is not None:
+                    return self.run()
+
             next_idx = STAGE_ORDER.index(stage) + 1
             next_stage = STAGE_ORDER[next_idx] if next_idx < len(STAGE_ORDER) else Stage.DONE
             advance_stage(self.state, stage, next_stage)
             save_state(self.state, self.run_dir)
-            console.print(f"  [green]✓ {stage.value}[/] — {result.message}")
+            _print(f"  [green]✓ {stage.value}[/] — {result.message}")
 
         elapsed = time.monotonic() - t0
         self.state.stage = Stage.DONE
@@ -166,23 +186,93 @@ class Orchestrator:
             duration_ms=elapsed * 1000,
             meta={"reasoner_stats": reasoner_stats},
         )
-        console.print(f"\n[bold green]Run complete[/] in {elapsed:.1f}s → {self.run_dir}")
+        _print(f"\n[bold green]Run complete[/] in {elapsed:.1f}s → {self.run_dir}")
+
+    def _check_plan_coverage(self, ctx: RunContext) -> str | None:
+        plan_path = ctx.run_dir / "plan.json"
+        if not plan_path.exists():
+            return None
+        plan = PlanOutput.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+        notes_dir = ctx.run_dir / "notes"
+
+        rq_claim_counts: dict[str, int] = {rq.rq_id: 0 for rq in plan.research_questions}
+        if notes_dir.exists():
+            for f in notes_dir.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    notes = SourceNotes.model_validate(data)
+                    for claim in notes.claims:
+                        for rq_id in claim.supports_rq:
+                            if rq_id in rq_claim_counts:
+                                rq_claim_counts[rq_id] += 1
+                except Exception:
+                    continue
+
+        total_rqs = len(plan.research_questions)
+        covered = sum(1 for c in rq_claim_counts.values() if c > 0)
+        coverage = covered / total_rqs if total_rqs > 0 else 1.0
+
+        if coverage >= plan.acceptance_threshold:
+            return None
+
+        if not self.config.allow_net:
+            ctx.shared["evidence_limited"] = True
+            self.trace.log(
+                stage="ORCHESTRATOR",
+                action="plan.refine",
+                output_summary=f"Coverage {coverage:.0%} below threshold, but allow_net=false; marking evidence_limited",
+                meta={"coverage": coverage, "threshold": plan.acceptance_threshold},
+            )
+            return None
+
+        max_ref = self.config.max_refinements
+        if self.state.refinement_count >= max_ref:
+            self.trace.log(
+                stage="ORCHESTRATOR",
+                action="plan.refine",
+                output_summary=f"Coverage {coverage:.0%} still low after {self.state.refinement_count} refinements; proceeding",
+                meta={"coverage": coverage, "refinement_count": self.state.refinement_count},
+            )
+            return None
+
+        self.state.refinement_count += 1
+        self.state.collect_rounds += 1
+        self.trace.log(
+            stage="ORCHESTRATOR",
+            action="plan.refine",
+            output_summary=f"Coverage {coverage:.0%} < {plan.acceptance_threshold:.0%}; rolling back to COLLECT (round {self.state.collect_rounds})",
+            meta={
+                "coverage": coverage,
+                "threshold": plan.acceptance_threshold,
+                "refinement_count": self.state.refinement_count,
+                "collect_rounds": self.state.collect_rounds,
+            },
+        )
+        _print(f"  [yellow]Plan refine: coverage {coverage:.0%}, rolling back to COLLECT[/]")
+
+        self.state.stage = Stage.COLLECT
+        if Stage.COLLECT in self.state.completed_stages:
+            self.state.completed_stages.remove(Stage.COLLECT)
+        if Stage.READ in self.state.completed_stages:
+            self.state.completed_stages.remove(Stage.READ)
+        save_state(self.state, self.run_dir)
+        return "refinement"
 
     def _ensure_dirs(self) -> None:
-        for sub in ["notes", "code", "code/logs", "artifacts"]:
+        for sub in ["notes", "code", "code/logs", "artifacts", "downloads"]:
             (self.run_dir / sub).mkdir(parents=True, exist_ok=True)
 
 
 def resume_run(run_dir: Path) -> None:
     state = load_state(run_dir)
     if state is None:
-        console.print(f"[red]No state.json found in {run_dir}[/]")
+        _print(f"[red]No state.json found in {run_dir}[/]")
         raise SystemExit(1)
 
     config = RunConfig.model_validate(state.config_snapshot)
     orch = Orchestrator(config, run_dir)
     orch.state = state
-    console.print(f"[bold]Resuming from {state.stage.value} (step {state.step})[/]")
+    _print(f"[bold]Resuming from {state.stage.value} (step {state.step})[/]")
     orch.run()
 
 
@@ -194,7 +284,7 @@ def replay_run(
 ) -> None:
     trace_path = run_dir / "trace.jsonl"
     if not trace_path.exists():
-        console.print(f"[red]No trace.jsonl found in {run_dir}[/]")
+        _print(f"[red]No trace.jsonl found in {run_dir}[/]")
         raise SystemExit(1)
 
     logger = TraceLogger(trace_path)
@@ -205,18 +295,27 @@ def replay_run(
         for i, ev in enumerate(events):
             if i < from_step:
                 continue
-            entry = ev.model_dump()
+            entry = {
+                "step": i,
+                "stage": ev.stage,
+                "agent": ev.agent,
+                "action": ev.action,
+                "tool": ev.tool,
+                "outcome": "error" if ev.error else "ok",
+                "latency_ms": ev.duration_ms,
+                "cache_hit": ev.action == "cache_hit",
+                "error": ev.error,
+            }
             if no_tools and ev.action == "invoke":
                 entry["dry_run"] = True
-                entry["note"] = f"Would invoke tool={ev.tool}"
+                entry["note"] = f"Would invoke tool={ev.tool} with {ev.input_summary[:100]}"
             output.append(entry)
         print(json.dumps(output, indent=2, default=str))
         return
 
-    console.print(f"[bold]Replaying {len(events)} events from {run_dir}[/]")
+    _print(f"[bold]Replaying {len(events)} events from {run_dir}[/]")
     if no_tools:
-        console.print("[yellow]Dry-run mode: tool invocations shown but not executed[/]")
-    console.print()
+        _print("[yellow]Dry-run mode: tool invocations shown but not executed[/]")
 
     for i, ev in enumerate(events):
         if i < from_step:
@@ -233,7 +332,7 @@ def replay_run(
             action_label = "[dim]WOULD_INVOKE[/]"
 
         parts = [p for p in [prefix, stage_str, agent_str, action_label, tool_str, err_str] if p]
-        console.print(" ".join(parts))
+        _print(" ".join(parts))
 
         if ev.output_summary:
-            console.print(f"       → {ev.output_summary[:120]}")
+            _print(f"       → {ev.output_summary[:120]}")

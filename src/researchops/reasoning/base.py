@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from researchops.trace import TraceLogger
 
 
 class ReasonerBase(ABC):
@@ -19,6 +22,7 @@ class ReasonerBase(ABC):
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> BaseModel:
         ...
 
@@ -28,8 +32,13 @@ class ReasonerBase(ABC):
         prompt: str,
         *,
         context: str = "",
+        trace: TraceLogger | None = None,
     ) -> str:
         ...
+
+    @property
+    def is_llm(self) -> bool:
+        return False
 
     def _record_call(self, tokens: int, latency_ms: float) -> None:
         self.token_count += tokens
