@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verification script for ResearchOps Agent repo integrity."""
+"""Verification script for ResearchOps Agent repo integrity (v1.0.0)."""
 from __future__ import annotations
 
 import json
@@ -29,7 +29,7 @@ def check_md_files() -> None:
         parts = rel.parts
         if any(p.startswith(".") for p in parts):
             continue
-        if "runs" in parts or "__pycache__" in parts:
+        if "runs" in parts or "__pycache__" in parts or "runs_batch" in parts:
             continue
         md_files.append(str(rel))
     allowed = {"README.md", "CHANGELOG.md"}
@@ -38,7 +38,7 @@ def check_md_files() -> None:
 
 
 def check_cli_help() -> None:
-    print("\n=== CLI help contains new parameters ===")
+    print("\n=== CLI help contains v1.0.0 parameters ===")
     try:
         result = subprocess.run(
             [sys.executable, "-c", "from researchops.cli import app; app(['run', '--help'])"],
@@ -51,8 +51,34 @@ def check_cli_help() -> None:
         return
 
     check("CLI help accessible", result.returncode == 0)
-    for param in ["--llm-base-url", "--llm-provider-label", "--llm-headers", "--llm-api-key", "--seed"]:
+    for param in [
+        "--llm-base-url", "--llm-provider-label", "--llm-headers",
+        "--llm-api-key", "--seed", "--sources", "--retrieval", "--embedder",
+    ]:
         check(f"CLI contains {param}", param in help_text)
+
+
+def check_evalset() -> None:
+    print("\n=== Evalset ===")
+    evalset_path = REPO_ROOT / "evalset" / "topics.jsonl"
+    check("evalset/topics.jsonl exists", evalset_path.exists())
+    if evalset_path.exists():
+        lines = [ln for ln in evalset_path.read_text(encoding="utf-8").strip().splitlines() if ln.strip()]
+        check("evalset has >= 20 topics", len(lines) >= 20, f"found {len(lines)}")
+
+
+def check_tools_registered() -> None:
+    print("\n=== Tool registration ===")
+    try:
+        from researchops.registry.builtin import register_builtin_tools
+        from researchops.registry.manager import ToolRegistry
+
+        reg = ToolRegistry()
+        register_builtin_tools(reg)
+        for tool_name in ["web_search", "fetch", "parse", "sandbox_exec", "cite", "arxiv_search", "arxiv_download_pdf"]:
+            check(f"Tool '{tool_name}' registered", tool_name in reg._tools)
+    except Exception as e:
+        check("Tool registry initialization", False, str(e))
 
 
 def check_runs_structure() -> None:
@@ -74,7 +100,7 @@ def check_runs_structure() -> None:
         "plan.json", "sources.jsonl", "report.md", "report_index.json",
         "trace.jsonl", "eval.json", "state.json",
     ]
-    required_dirs = ["notes", "code", "artifacts"]
+    required_dirs = ["notes", "code", "artifacts", "downloads"]
 
     for fname in required:
         check(f"  {fname} exists", (latest / fname).exists())
@@ -86,26 +112,32 @@ def check_runs_structure() -> None:
     if eval_path.exists():
         try:
             data = json.loads(eval_path.read_text(encoding="utf-8"))
-            v03_fields = [
+            v1_fields = [
                 "conflict_count", "plan_refinement_count", "collect_rounds",
                 "artifacts_count", "llm_provider_label",
+                "papers_per_rq", "low_quality_source_rate", "section_nonempty_rate",
             ]
-            for field in v03_fields:
+            for field in v1_fields:
                 check(f"  eval.json has '{field}'", field in data)
         except Exception as e:
             check("  eval.json is valid JSON", False, str(e))
 
-    qa_path = latest / "qa_conflicts.json"
-    check("  qa_conflicts.json exists", qa_path.exists())
+    qa_report = latest / "qa_report.json"
+    check("  qa_report.json exists", qa_report.exists())
+
+    qa_conflicts = latest / "qa_conflicts.json"
+    check("  qa_conflicts.json exists", qa_conflicts.exists())
 
 
 def main() -> int:
     print("=" * 60)
-    print("ResearchOps Agent — Repo Verification")
+    print("ResearchOps Agent v1.0.0 — Repo Verification")
     print("=" * 60)
 
     check_md_files()
     check_cli_help()
+    check_evalset()
+    check_tools_registered()
     check_runs_structure()
 
     print(f"\n{'=' * 60}")

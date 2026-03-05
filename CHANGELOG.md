@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.0.0 — 2026-03-05
+
+### Highlights
+
+Production-grade, interview-ready release. ResearchOps Harness now supports arXiv-first ingestion, evidence-first writing, run-scoped BM25 retrieval, data quality governance, evalset batch runner, and full LLM ecosystem coverage.
+
+### Added
+
+- **arXiv-first ingestion**: `arxiv_search` (Atom API) and `arxiv_download_pdf` tools via ToolRegistry; `--sources {demo,arxiv,web,hybrid}` CLI option
+- **Run-scoped retrieval**: BM25 index (rank-bm25) built after READ; Writer, QA, Verifier consume ranked claims via `retrieve(query, top_k)`
+- **Evidence-first writing**: every report sentence requires a citation marker; insufficient evidence triggers rollback to COLLECT (with net) or marks section as limited
+- **Collector strategy engine**: `_select_strategy()` dispatches to demo/arxiv/web/hybrid; adaptive stop per-RQ coverage; `failures.json` for failed sources
+- **Enhanced reading cards**: `bibliographic` (paper_id/authors/year for arXiv), `quality` (readability_score, noise_flags, extraction_method), `source_type_detail` (arxiv_meta/arxiv_pdf/web_html/demo)
+- **QA enhancements**: `_source_quality_check` (low-quality ratio gate), `qa_report.json` with structured check results, tighter `unsupported_claim_rate` gate (deep<=5%, fast<=20%)
+- **Eval expansion**: `papers_per_rq`, `low_quality_source_rate`, `section_nonempty_rate`
+- **Evalset**: `evalset/topics.jsonl` (30 topics EN/CN), `scripts/run_evalset.py` batch runner with `aggregate_metrics.json`
+- **CLI subcommands**: `verify-run`, `verify-repo`; `--retrieval {none,bm25}`, `--embedder` options
+- **HTML parsing**: trafilatura as optional primary parser (fallback to bs4); `quality_score` output
+- **Verification scripts**: updated `verify_repo.py` (v1.0.0 params, evalset, arXiv tools), updated `verify_run_integrity.py` (failures.json, qa_report.json, retrieval_index.json)
+- **Tests**: `test_arxiv_tools.py`, `test_retrieval.py`, v1 model/config tests in `test_v03_features.py`
+
+### Changed
+
+- Version bump to 1.0.0
+- `rank-bm25>=0.2` added as core dependency; `trafilatura>=1.6` as optional `[quality]`
+- `Source` model: added `source_type_detail` field
+- `SourceNotes` model: added `bibliographic` and `quality` dict fields
+- `EvalResult` model: added 3 new metric fields
+- `RunConfig`: added `sources`, `retrieval`, `embedder` fields with `SourceStrategy`/`RetrievalMode` enums
+- Collector: strategy-based dispatch replaces simple online/offline branching
+- Orchestrator: builds retrieval index after READ; stores in `RunContext.shared["retriever"]`
+- Writer: uses retrieval for claim lookup per section; evidence-first hard constraint
+- QA: writes `qa_report.json`; source quality gate added
+
 ## v0.3.3 — 2026-03-05
 
 ### Fixed

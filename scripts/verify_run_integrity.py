@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the data integrity of a completed run directory."""
+"""Verify the data integrity of a completed run directory (v1.0.0)."""
 from __future__ import annotations
 
 import json
@@ -26,7 +26,6 @@ def main() -> None:
 
     ok = True
 
-    # 1. Check sources.jsonl
     sources_path = run_dir / "sources.jsonl"
     if sources_path.exists():
         for i, line in enumerate(sources_path.read_text(encoding="utf-8").strip().splitlines()):
@@ -53,7 +52,6 @@ def main() -> None:
     else:
         print("WARN: sources.jsonl not found")
 
-    # 2. No html/pdf in notes/
     notes_dir = run_dir / "notes"
     if notes_dir.exists():
         for f in notes_dir.iterdir():
@@ -63,7 +61,6 @@ def main() -> None:
             if f.is_file() and f.suffix.lower() != ".json":
                 print(f"WARN: non-json file in notes/: {f.name}")
 
-    # 3. Check report for boilerplate
     report_path = run_dir / "report.md"
     if report_path.exists():
         report = report_path.read_text(encoding="utf-8")
@@ -74,6 +71,30 @@ def main() -> None:
             ok = False
     else:
         print("WARN: report.md not found")
+
+    failures_path = run_dir / "failures.json"
+    if failures_path.exists():
+        try:
+            data = json.loads(failures_path.read_text(encoding="utf-8"))
+            print(f"  INFO: failures.json contains {len(data)} failed sources")
+        except Exception:
+            print("WARN: failures.json is not valid JSON")
+
+    qa_report = run_dir / "qa_report.json"
+    if qa_report.exists():
+        try:
+            data = json.loads(qa_report.read_text(encoding="utf-8"))
+            checks = data.get("checks", [])
+            all_passed = data.get("all_passed", False)
+            print(f"  INFO: qa_report.json has {len(checks)} checks, all_passed={all_passed}")
+        except Exception:
+            print("WARN: qa_report.json is not valid JSON")
+
+    retrieval_idx = run_dir / "retrieval_index.json"
+    if retrieval_idx.exists():
+        print("  INFO: retrieval_index.json exists")
+    else:
+        print("  INFO: no retrieval_index.json (retrieval may not have been used)")
 
     if ok:
         print("PASS: run integrity check succeeded")

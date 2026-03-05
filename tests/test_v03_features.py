@@ -155,3 +155,87 @@ def test_openai_compat_headers():
 
     stats = reasoner.get_stats()
     assert stats["provider_label"] == "deepseek"
+
+
+def test_source_strategy_enums():
+    """SourceStrategy and RetrievalMode enums should be importable and valid."""
+    from researchops.config import RetrievalMode, SourceStrategy
+
+    assert SourceStrategy.DEMO.value == "demo"
+    assert SourceStrategy.ARXIV.value == "arxiv"
+    assert SourceStrategy.WEB.value == "web"
+    assert SourceStrategy.HYBRID.value == "hybrid"
+    assert RetrievalMode.NONE.value == "none"
+    assert RetrievalMode.BM25.value == "bm25"
+
+
+def test_source_model_has_type_detail():
+    """Source model should have source_type_detail field."""
+    from researchops.models import Source, SourceType
+
+    src = Source(source_id="test", type=SourceType.API, source_type_detail="arxiv_meta")
+    assert src.source_type_detail == "arxiv_meta"
+
+
+def test_source_notes_has_bibliographic():
+    """SourceNotes should have bibliographic and quality fields."""
+    from researchops.models import SourceNotes
+
+    notes = SourceNotes(
+        source_id="test",
+        bibliographic={"paper_id": "2301.00001"},
+        quality={"readability_score": 0.8},
+    )
+    assert notes.bibliographic["paper_id"] == "2301.00001"
+    assert notes.quality["readability_score"] == 0.8
+
+
+def test_eval_result_has_new_metrics():
+    """EvalResult should have papers_per_rq, low_quality_source_rate, section_nonempty_rate."""
+    from researchops.models import EvalResult
+
+    result = EvalResult(papers_per_rq=2.5, low_quality_source_rate=0.1, section_nonempty_rate=0.9)
+    assert result.papers_per_rq == 2.5
+    assert result.low_quality_source_rate == 0.1
+    assert result.section_nonempty_rate == 0.9
+
+
+def test_qa_source_quality_check(tmp_run_dir: Path):
+    """QA source_quality_check should detect high low-quality ratio."""
+    from researchops.agents.base import RunContext
+    from researchops.agents.qa import QAAgent
+    from researchops.config import RunConfig
+    from researchops.models import StateSnapshot
+    from researchops.reasoning.none import NoneReasoner
+    from researchops.registry.manager import ToolRegistry
+    from researchops.sandbox.proc import SubprocessSandbox
+
+    config = RunConfig(topic="test", run_dir=tmp_run_dir)
+    trace = TraceLogger(tmp_run_dir / "trace.jsonl")
+
+    ctx = RunContext(
+        run_dir=tmp_run_dir, config=config,
+        state=StateSnapshot(run_id="test"),
+        registry=ToolRegistry(),
+        trace=trace,
+        sandbox=SubprocessSandbox(),
+        reasoner=NoneReasoner(),
+        shared={"low_quality_sources": ["s1", "s2", "s3"]},
+    )
+
+    from researchops.models import Source, SourceType
+    sources_path = tmp_run_dir / "sources.jsonl"
+    sources = [
+        Source(source_id="s1", type=SourceType.HTML),
+        Source(source_id="s2", type=SourceType.HTML),
+        Source(source_id="s3", type=SourceType.HTML),
+        Source(source_id="s4", type=SourceType.HTML),
+    ]
+    with sources_path.open("w") as f:
+        for s in sources:
+            f.write(s.model_dump_json() + "\n")
+
+    qa = QAAgent()
+    issues = qa._source_quality_check(ctx)
+    assert len(issues) > 0
+    assert "source_quality" in issues[0]

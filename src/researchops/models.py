@@ -51,6 +51,7 @@ class Source(BaseModel):
     retrieved_at: str = Field(default_factory=_now)
     local_path: str = ""
     hash: str = ""
+    source_type_detail: str = ""
 
 
 # ── Claims / Notes ───────────────────────────────────────────────────
@@ -72,6 +73,8 @@ class SourceNotes(BaseModel):
     contribution: str = ""
     method: str = ""
     limitations: str = ""
+    bibliographic: dict = Field(default_factory=dict)
+    quality: dict = Field(default_factory=dict)
 
 
 # ── State / Checkpoint ───────────────────────────────────────────────
@@ -150,6 +153,9 @@ class EvalResult(BaseModel):
     collect_rounds: int = 1
     artifacts_count: int = 0
     llm_provider_label: str = ""
+    papers_per_rq: float = 0.0
+    low_quality_source_rate: float = 0.0
+    section_nonempty_rate: float = 0.0
 
 
 # ── Agent Result ──────────────────────────────────────────────────────

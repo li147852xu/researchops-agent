@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import uuid
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from researchops.config import RunConfig, RunMode, SandboxBackend
+from researchops.config import RetrievalMode, RunConfig, RunMode, SandboxBackend, SourceStrategy
 
 app = typer.Typer(
     name="researchops",
@@ -30,6 +31,9 @@ def run(
     sandbox: SandboxBackend = typer.Option(
         SandboxBackend.SUBPROCESS, "--sandbox", help="Sandbox backend"
     ),
+    sources: SourceStrategy = typer.Option(SourceStrategy.HYBRID, "--sources", help="Source strategy: demo, arxiv, web, hybrid"),
+    retrieval: RetrievalMode = typer.Option(RetrievalMode.BM25, "--retrieval", help="Retrieval mode: none, bm25"),
+    embedder: str = typer.Option("none", "--embedder", help="Embedder backend: none, openai_compat"),
     llm: str = typer.Option("none", "--llm", help="LLM backend: none, openai, openai_compat, anthropic"),
     llm_model: str = typer.Option("", "--llm-model", help="LLM model name"),
     llm_base_url: str = typer.Option("", "--llm-base-url", help="LLM API base URL"),
@@ -49,6 +53,10 @@ def run(
     net_enabled = allow_net.lower() in ("true", "1", "yes")
     domains = [d.strip() for d in net_allowlist.split(",") if d.strip()] if net_allowlist else []
 
+    if not net_enabled and sources not in (SourceStrategy.DEMO,):
+        console.print(f"[yellow]allow-net=false: overriding sources={sources.value} -> demo[/]")
+        sources = SourceStrategy.DEMO
+
     api_key = llm_api_key
     if not api_key:
         if llm in ("openai", "openai_compat"):
@@ -58,6 +66,11 @@ def run(
                     break
         elif llm == "anthropic":
             api_key = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("LLM_API_KEY", "")
+
+    if llm in ("openai", "openai_compat", "anthropic") and not api_key:
+        console.print(f"[red]--llm {llm} requires an API key. Set --llm-api-key or the appropriate env var.[/]")
+        console.print("[dim]Use --llm none for rule-based mode.[/]")
+        raise SystemExit(1)
 
     if llm_headers:
         try:
@@ -76,6 +89,9 @@ def run(
         net_allowlist=domains,
         sandbox=sandbox,
         run_dir=run_dir,
+        sources=sources,
+        retrieval=retrieval,
+        embedder=embedder,
         llm=llm,
         llm_model=llm_model,
         llm_base_url=llm_base_url,
@@ -85,10 +101,11 @@ def run(
         seed=seed,
     )
 
-    console.print(f"[bold]ResearchOps Agent[/] — run [cyan]{run_id}[/]")
+    console.print(f"[bold]ResearchOps Agent v1.0.0[/] — run [cyan]{run_id}[/]")
     console.print(f"  Topic: {topic}")
     console.print(
-        f"  Mode: {mode.value} | Net: {net_enabled} | Sandbox: {sandbox.value} | LLM: {llm}"
+        f"  Mode: {mode.value} | Net: {net_enabled} | Sandbox: {sandbox.value} | "
+        f"Sources: {sources.value} | Retrieval: {retrieval.value}"
     )
 
     if llm != "none":
@@ -113,6 +130,9 @@ def run(
     console.print(f"  Conflicts: {eval_result.conflict_count} | Refinements: {eval_result.plan_refinement_count}")
     console.print(f"  Tool calls: {eval_result.tool_calls} | Cache hit rate: {eval_result.cache_hit_rate:.1%}")
     console.print(f"  Latency: {eval_result.latency_sec}s | Artifacts: {eval_result.artifacts_count}")
+    if eval_result.papers_per_rq > 0:
+        console.print(f"  Papers/RQ: {eval_result.papers_per_rq:.1f} | Low-quality rate: {eval_result.low_quality_source_rate:.1%}")
+    console.print(f"  Section non-empty rate: {eval_result.section_nonempty_rate:.1%}")
 
 
 @app.command()
@@ -160,6 +180,34 @@ def eval_cmd(
     console.print(f"  Tool calls: {result.tool_calls} | Cache hit rate: {result.cache_hit_rate:.1%}")
     console.print(f"  Latency: {result.latency_sec}s | Steps: {result.steps}")
     console.print(f"\n[green]Written to {run_dir / 'eval.json'}[/]")
+
+
+@app.command(name="verify-run")
+def verify_run_cmd(
+    run_dir: Path = typer.Argument(..., help="Path to run directory to verify"),
+) -> None:
+    """Verify integrity of a completed run's artifacts."""
+    import subprocess
+
+    script = Path("scripts/verify_run_integrity.py")
+    if not script.exists():
+        console.print("[red]scripts/verify_run_integrity.py not found[/]")
+        raise SystemExit(1)
+    result = subprocess.run([sys.executable, str(script), str(run_dir)])
+    raise SystemExit(result.returncode)
+
+
+@app.command(name="verify-repo")
+def verify_repo_cmd() -> None:
+    """Verify repository structure and constraints."""
+    import subprocess
+
+    script = Path("scripts/verify_repo.py")
+    if not script.exists():
+        console.print("[red]scripts/verify_repo.py not found[/]")
+        raise SystemExit(1)
+    result = subprocess.run([sys.executable, str(script)])
+    raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":

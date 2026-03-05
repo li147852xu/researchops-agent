@@ -43,6 +43,10 @@ def compute_eval(run_dir: Path, *, config: RunConfig | None = None, llm_enabled:
     est_tokens = _estimate_tokens(events)
     est_method = "token_count_from_api" if has_llm_calls else "none"
 
+    papers_rq = _papers_per_rq(sources, run_dir)
+    lq_rate = _low_quality_source_rate(events, sources)
+    sec_rate = _section_nonempty_rate(report_path)
+
     result = EvalResult(
         citation_coverage=citation_cov,
         source_diversity=diversity,
@@ -61,6 +65,9 @@ def compute_eval(run_dir: Path, *, config: RunConfig | None = None, llm_enabled:
         collect_rounds=state.collect_rounds if state else 1,
         artifacts_count=artifacts_count,
         llm_provider_label=provider_label,
+        papers_per_rq=papers_rq,
+        low_quality_source_rate=lq_rate,
+        section_nonempty_rate=sec_rate,
     )
 
     eval_path = run_dir / "eval.json"
@@ -166,6 +173,44 @@ def _count_artifacts(run_dir: Path) -> int:
     if not art_dir.exists():
         return 0
     return sum(1 for _ in art_dir.iterdir())
+
+
+def _papers_per_rq(sources: list[Source], run_dir: Path) -> float:
+    arxiv_sources = [s for s in sources if "arxiv" in s.source_type_detail]
+    plan_path = run_dir / "plan.json"
+    if not plan_path.exists():
+        return 0.0
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        rq_count = len(plan.get("research_questions", []))
+        if rq_count == 0:
+            return 0.0
+        return round(len(arxiv_sources) / rq_count, 2)
+    except Exception:
+        return 0.0
+
+
+def _low_quality_source_rate(events: list[TraceEvent], sources: list[Source]) -> float:
+    if not sources:
+        return 0.0
+    lq_count = sum(1 for e in events if e.action == "parse.low_quality")
+    return round(lq_count / len(sources), 3)
+
+
+def _section_nonempty_rate(report_path: Path) -> float:
+    if not report_path.exists():
+        return 0.0
+    text = report_path.read_text(encoding="utf-8")
+    sections = re.split(r"^##\s+", text, flags=re.MULTILINE)
+    if len(sections) <= 1:
+        return 0.0
+    content_sections = sections[1:]
+    nonempty = 0
+    for sec in content_sections:
+        paragraphs = [p.strip() for p in sec.split("\n\n") if len(p.strip()) > 30 and not p.strip().startswith("#")]
+        if paragraphs:
+            nonempty += 1
+    return round(nonempty / len(content_sections), 3) if content_sections else 0.0
 
 
 def _load_sources(run_dir: Path) -> list[Source]:

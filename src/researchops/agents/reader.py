@@ -52,7 +52,7 @@ _PREAMBLE_PATTERNS = [
     "you'll learn", "you will learn", "let us explore",
 ]
 
-_MAX_CLAIMS_PER_SOURCE = 6
+_MAX_CLAIMS_PER_SOURCE = 8
 _MIN_SENTENCE_LEN = 40
 _MAX_CLAIM_TEXT_LEN = 260
 _PREFERRED_MIN = 80
@@ -95,6 +95,8 @@ class ReaderAgent(AgentBase):
 
         low_quality_sources: list[str] = []
         for src in sources:
+            is_arxiv_meta = src.source_type_detail == "arxiv_meta"
+
             if not src.local_path or not Path(src.local_path).exists():
                 ctx.trace.log(
                     stage="READ", agent=self.name, action="parse.skipped",
@@ -102,7 +104,13 @@ class ReaderAgent(AgentBase):
                 )
                 continue
 
-            text = self._extract_text(src, ctx)
+            if is_arxiv_meta:
+                text = Path(src.local_path).read_text(encoding="utf-8", errors="replace")
+                extraction_method = "arxiv_abstract"
+            else:
+                text = self._extract_text(src, ctx)
+                extraction_method = "parse_doc"
+
             if not text.strip():
                 ctx.trace.log(
                     stage="READ", agent=self.name, action="parse.low_quality",
@@ -130,12 +138,26 @@ class ReaderAgent(AgentBase):
             method = self._extract_section(text, "method")
             limitations = self._extract_section(text, "limitation")
 
+            bibliographic = self._build_bibliographic(src)
+            noise_flags = []
+            if src.source_id in low_quality_sources:
+                noise_flags.append("low_quality")
+            text_len = len(text.strip())
+            readability = min(1.0, text_len / 3000)
+            quality = {
+                "readability_score": round(readability, 3),
+                "noise_flags": noise_flags,
+                "extraction_method": extraction_method,
+            }
+
             notes = SourceNotes(
                 source_id=src.source_id,
                 claims=claims,
                 contribution=contribution,
                 method=method,
                 limitations=limitations,
+                bibliographic=bibliographic,
+                quality=quality,
             )
             out_path = notes_dir / f"{src.source_id}.json"
             out_path.write_text(notes.model_dump_json(indent=2), encoding="utf-8")
@@ -152,6 +174,20 @@ class ReaderAgent(AgentBase):
             success=True,
             message=f"Extracted {total_claims} claims from {len(sources)} sources",
         )
+
+    def _build_bibliographic(self, src: Source) -> dict:
+        bib: dict = {}
+        if src.source_type_detail in ("arxiv_meta", "arxiv_pdf"):
+            arxiv_id = ""
+            if "arxiv.org/abs/" in src.url:
+                arxiv_id = src.url.split("/abs/")[-1]
+            bib["paper_id"] = arxiv_id
+            bib["title"] = src.title.replace(" [PDF]", "")
+            bib["source"] = "arxiv"
+        else:
+            bib["title"] = src.title
+            bib["domain"] = src.domain
+        return bib
 
     def _load_sources(self, run_dir: Path) -> list[Source]:
         sources_path = run_dir / "sources.jsonl"

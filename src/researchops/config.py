@@ -17,6 +17,18 @@ class SandboxBackend(str, Enum):
     DOCKER = "docker"
 
 
+class SourceStrategy(str, Enum):
+    DEMO = "demo"
+    ARXIV = "arxiv"
+    WEB = "web"
+    HYBRID = "hybrid"
+
+
+class RetrievalMode(str, Enum):
+    NONE = "none"
+    BM25 = "bm25"
+
+
 class RunConfig(BaseModel):
     topic: str
     mode: RunMode = RunMode.FAST
@@ -27,6 +39,9 @@ class RunConfig(BaseModel):
     net_allowlist: list[str] = Field(default_factory=list)
     sandbox: SandboxBackend = SandboxBackend.SUBPROCESS
     run_dir: Path = Field(default=Path("runs"))
+    sources: SourceStrategy = SourceStrategy.HYBRID
+    retrieval: RetrievalMode = RetrievalMode.BM25
+    embedder: str = "none"
     llm: Literal["none", "openai", "openai_compat", "anthropic"] = "none"
     llm_model: str = ""
     llm_base_url: str = ""
@@ -50,3 +65,11 @@ class RunConfig(BaseModel):
     @property
     def max_refinements(self) -> int:
         return 2 if self.mode == RunMode.DEEP else 1
+
+    @property
+    def min_sources_per_rq(self) -> int:
+        return 3 if self.mode == RunMode.DEEP else 1
+
+    @property
+    def min_claims_per_rq(self) -> int:
+        return 5 if self.mode == RunMode.DEEP else 2

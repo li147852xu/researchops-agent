@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 from researchops.agents.base import AgentBase, RunContext
@@ -22,6 +23,9 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union)
 
 
+_SOURCE_CAP = 0.4
+
+
 class QAAgent(AgentBase):
     name = "qa"
 
@@ -40,35 +44,44 @@ class QAAgent(AgentBase):
         sources = self._load_sources(ctx.run_dir)
         all_notes = self._load_all_notes(ctx.run_dir)
 
+        checks: list[dict] = []
         hard_issues: list[str] = []
 
         code_garbage_issues = self._code_garbage_detector(report)
         hard_issues.extend(code_garbage_issues)
+        checks.append({"check": "code_garbage", "passed": len(code_garbage_issues) == 0, "issues": code_garbage_issues})
 
         boilerplate_issues = self._boilerplate_detector(report)
         hard_issues.extend(boilerplate_issues)
+        checks.append({"check": "boilerplate", "passed": len(boilerplate_issues) == 0, "issues": boilerplate_issues})
 
         paste_issues = self._paste_detector(report)
         hard_issues.extend(paste_issues)
+        checks.append({"check": "paste", "passed": len(paste_issues) == 0, "issues": paste_issues})
 
         redundancy_issues = self._redundancy_detector(report)
         hard_issues.extend(redundancy_issues)
+        checks.append({"check": "redundancy", "passed": len(redundancy_issues) == 0, "issues": redundancy_issues})
 
         source_issues = self._source_availability_check(
             sources, ctx.config.mode.value if hasattr(ctx.config.mode, "value") else str(ctx.config.mode),
         )
         hard_issues.extend(source_issues)
+        checks.append({"check": "source_availability", "passed": len(source_issues) == 0, "issues": source_issues})
+
+        sq_issues = self._source_quality_check(ctx)
+        hard_issues.extend(sq_issues)
+        checks.append({"check": "source_quality", "passed": len(sq_issues) == 0, "issues": sq_issues})
 
         if hard_issues and ctx.state.retry_counts.get("qa", 0) < 1:
             ctx.state.retry_counts["qa"] = ctx.state.retry_counts.get("qa", 0) + 1
             rollback_target = self._route_quality_rollback(hard_issues, ctx.run_dir, allow_net=ctx.config.allow_net)
             ctx.trace.log(
-                stage="QA",
-                agent=self.name,
-                action="qa.rollback_decision",
+                stage="QA", agent=self.name, action="qa.rollback_decision",
                 output_summary=f"Quality fail -> {rollback_target.value}",
                 meta={"hard_issues": hard_issues, "target": rollback_target.value},
             )
+            self._write_qa_report(ctx.run_dir, checks)
             return AgentResult(
                 success=False,
                 message=f"QA quality fail: {'; '.join(hard_issues)}",
@@ -78,17 +91,22 @@ class QAAgent(AgentBase):
         issues: list[str] = list(hard_issues)
 
         cov = self._check_citation_coverage(report)
+        checks.append({"check": "citation_coverage", "passed": cov >= 0.3, "value": cov, "threshold": 0.3})
         if cov < 0.3:
             issues.append(f"Low citation coverage: {cov:.0%}")
 
         diversity = self._check_source_diversity(sources)
+        checks.append({"check": "source_diversity", "passed": diversity["unique_domains"] >= 1, "value": diversity})
         if diversity["unique_domains"] < 1:
             issues.append("No source diversity")
 
         traceability = self._check_traceability(ctx.run_dir, all_notes)
         unsupported_rate = traceability.get("unsupported_rate", 0.0)
-        if unsupported_rate > 0.5:
-            issues.append(f"High unsupported claim rate: {unsupported_rate:.0%}")
+        is_deep = ctx.config.mode.value == "deep" if hasattr(ctx.config.mode, "value") else False
+        unsupported_threshold = 0.05 if is_deep else 0.20
+        checks.append({"check": "unsupported_claim_rate", "passed": unsupported_rate <= unsupported_threshold, "value": unsupported_rate, "threshold": unsupported_threshold})
+        if unsupported_rate > unsupported_threshold:
+            issues.append(f"High unsupported claim rate: {unsupported_rate:.0%} (max {unsupported_threshold:.0%})")
 
         unsupported_assertions = self._scan_unsupported_assertions(report)
         if unsupported_assertions:
@@ -99,16 +117,17 @@ class QAAgent(AgentBase):
         conflicts_path.write_text(json.dumps(conflicts, indent=2), encoding="utf-8")
         ctx.shared["has_conflicts"] = len(conflicts.get("conflicts", [])) > 0
         ctx.shared["conflict_count"] = len(conflicts.get("conflicts", []))
+        checks.append({"check": "conflict_scan", "passed": len(conflicts.get("conflicts", [])) == 0, "value": len(conflicts.get("conflicts", []))})
 
         if conflicts.get("conflicts"):
             issues.append(f"{len(conflicts['conflicts'])} claim conflicts detected")
 
+        self._write_qa_report(ctx.run_dir, checks)
+
         rollback_target = self._determine_rollback(issues, traceability, conflicts, ctx)
 
         ctx.trace.log(
-            stage="QA",
-            agent=self.name,
-            action="complete",
+            stage="QA", agent=self.name, action="complete",
             output_summary=f"{len(issues)} issues found" if issues else "QA passed",
             meta={
                 "citation_coverage": cov,
@@ -124,9 +143,7 @@ class QAAgent(AgentBase):
         if soft_issues and ctx.state.retry_counts.get("qa", 0) < 1:
             ctx.state.retry_counts["qa"] = ctx.state.retry_counts.get("qa", 0) + 1
             ctx.trace.log(
-                stage="QA",
-                agent=self.name,
-                action="qa.rollback_decision",
+                stage="QA", agent=self.name, action="qa.rollback_decision",
                 output_summary=f"Rolling back to {rollback_target.value}",
                 meta={"issues": soft_issues, "target": rollback_target.value},
             )
@@ -147,6 +164,21 @@ class QAAgent(AgentBase):
                 "diversity": diversity,
             },
         )
+
+    def _write_qa_report(self, run_dir: Path, checks: list[dict]) -> None:
+        report = {"checks": checks, "all_passed": all(c.get("passed", True) for c in checks)}
+        (run_dir / "qa_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    def _source_quality_check(self, ctx: RunContext) -> list[str]:
+        issues: list[str] = []
+        low_quality = ctx.shared.get("low_quality_sources", [])
+        sources = self._load_sources(ctx.run_dir)
+        if not sources:
+            return issues
+        ratio = len(low_quality) / max(1, len(sources))
+        if ratio > 0.50:
+            issues.append(f"source_quality: {ratio:.0%} of sources are low quality")
+        return issues
 
     # ── Quality detectors (hard fail) ────────────────────────────────
 
@@ -227,7 +259,6 @@ class QAAgent(AgentBase):
             markers = re.findall(r"\[@(\w+)\]", sec)
             if len(markers) < 3:
                 continue
-            from collections import Counter
             mc = Counter(markers).most_common(1)
             if mc:
                 dominant_id, dominant_count = mc[0]
@@ -249,7 +280,6 @@ class QAAgent(AgentBase):
             if len(s) > 30 and not s.startswith("#") and not s.startswith("-") and not s.startswith("*"):
                 normalized.append(_normalize_sentence(s))
 
-        from collections import Counter
         counts = Counter(normalized)
         dup_count = sum(c - 1 for c in counts.values() if c > 1)
         if dup_count > 10:
@@ -258,7 +288,7 @@ class QAAgent(AgentBase):
 
     def _route_quality_rollback(self, hard_issues: list[str], run_dir: Path, *, allow_net: bool = False) -> Stage:
         issues_text = " ".join(hard_issues).lower()
-        if "code_garbage" in issues_text or "source_availability" in issues_text:
+        if "code_garbage" in issues_text or "source_availability" in issues_text or "source_quality" in issues_text:
             return Stage.COLLECT if allow_net else Stage.READ
 
         index_path = run_dir / "report_index.json"
@@ -388,9 +418,7 @@ class QAAgent(AgentBase):
 
         if conflicts.get("conflicts") and ctx.config.allow_net:
             ctx.trace.log(
-                stage="QA",
-                agent=self.name,
-                action="qa.rollback_decision",
+                stage="QA", agent=self.name, action="qa.rollback_decision",
                 output_summary="Conflicts detected with net enabled -> COLLECT",
             )
             return Stage.COLLECT
@@ -424,6 +452,3 @@ class QAAgent(AgentBase):
             except Exception:
                 continue
         return result
-
-
-_SOURCE_CAP = 0.4

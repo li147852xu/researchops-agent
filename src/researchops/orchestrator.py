@@ -110,6 +110,8 @@ class Orchestrator:
                 "is_llm": self.reasoner.is_llm,
                 "provider_label": getattr(self.reasoner, "provider_label", "none"),
                 "model": getattr(self.reasoner, "model", "none"),
+                "sources_strategy": self.config.sources.value,
+                "retrieval_mode": self.config.retrieval.value,
             },
         )
 
@@ -165,6 +167,7 @@ class Orchestrator:
                 return self.run()
 
             if stage == Stage.READ:
+                self._build_retrieval_index(ctx)
                 refinement_result = self._check_plan_coverage(ctx)
                 if refinement_result is not None:
                     return self.run()
@@ -187,6 +190,40 @@ class Orchestrator:
             meta={"reasoner_stats": reasoner_stats},
         )
         _print(f"\n[bold green]Run complete[/] in {elapsed:.1f}s → {self.run_dir}")
+
+    def _build_retrieval_index(self, ctx: RunContext) -> None:
+        from researchops.retrieval import create_retriever
+
+        retriever = create_retriever(self.config.retrieval.value, self.run_dir)
+        notes_dir = self.run_dir / "notes"
+        all_claims: list[dict] = []
+
+        if notes_dir.exists():
+            for f in notes_dir.glob("*.json"):
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    notes = SourceNotes.model_validate(data)
+                    for claim in notes.claims:
+                        all_claims.append({
+                            "claim_id": claim.claim_id,
+                            "text": claim.text,
+                            "source_id": notes.source_id,
+                            "supports_rq": claim.supports_rq,
+                            "claim_type": claim.claim_type,
+                            "polarity": claim.polarity,
+                        })
+                except Exception:
+                    continue
+
+        retriever.index(all_claims)
+        ctx.shared["retriever"] = retriever
+
+        self.trace.log(
+            stage="ORCHESTRATOR",
+            action="retrieval.index_built",
+            output_summary=f"Indexed {len(all_claims)} claims with {self.config.retrieval.value}",
+            meta={"claims_count": len(all_claims), "mode": self.config.retrieval.value},
+        )
 
     def _check_plan_coverage(self, ctx: RunContext) -> str | None:
         plan_path = ctx.run_dir / "plan.json"

@@ -80,34 +80,53 @@ _CODE_LINE_RE = re.compile(
 _MIN_QUALITY_CHARS = 500
 
 
+def _compute_quality_score(text: str) -> float:
+    """Heuristic quality score 0.0-1.0 based on text properties."""
+    if not text.strip():
+        return 0.0
+    length = len(text.strip())
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return 0.0
+    code_count = sum(1 for ln in lines if _CODE_LINE_RE.search(ln))
+    code_density = code_count / len(lines)
+
+    length_score = min(1.0, length / 5000)
+    clean_score = 1.0 - min(1.0, code_density * 2)
+    return round(length_score * 0.4 + clean_score * 0.6, 3)
+
+
 def _quality_gate(text: str, title: str) -> dict:
     if len(text.strip()) < _MIN_QUALITY_CHARS:
         return {
             "text": "",
             "title": title,
+            "quality_score": 0.0,
             "warning": "low_quality",
             "raw_len": len(text.strip()),
         }
     lines = [ln for ln in text.split("\n") if ln.strip()]
     if not lines:
-        return {"text": "", "title": title, "warning": "low_quality", "raw_len": 0}
+        return {"text": "", "title": title, "quality_score": 0.0, "warning": "low_quality", "raw_len": 0}
     code_count = sum(1 for ln in lines if _CODE_LINE_RE.search(ln))
     density = code_count / len(lines)
     if density > 0.30:
         return {
             "text": "",
             "title": title,
+            "quality_score": 0.0,
             "warning": "code_heavy",
             "code_density": round(density, 3),
         }
-    return {"text": text, "title": title}
+    qs = _compute_quality_score(text)
+    return {"text": text, "title": title, "quality_score": qs}
 
 
 def parse_doc(file_path: str, format: str = "auto") -> dict:
-    """Extract text from HTML, PDF, or plain text files."""
+    """Extract text from HTML, PDF, or plain text files with quality scoring."""
     p = Path(file_path)
     if not p.exists():
-        return {"text": "", "title": "", "error": f"File not found: {file_path}"}
+        return {"text": "", "title": "", "quality_score": 0.0, "error": f"File not found: {file_path}"}
 
     if format == "pdf" or (format == "auto" and p.suffix.lower() == ".pdf"):
         head = p.read_bytes()[:8]
@@ -115,6 +134,7 @@ def parse_doc(file_path: str, format: str = "auto") -> dict:
             return {
                 "text": "",
                 "title": "",
+                "quality_score": 0.0,
                 "warning": "parse_rejected",
                 "error": "File claims to be PDF but lacks %PDF- header",
             }
@@ -137,16 +157,29 @@ def parse_doc(file_path: str, format: str = "auto") -> dict:
         result = _parse_text(p)
 
     if result.get("error"):
+        result.setdefault("quality_score", 0.0)
         return result
 
     gate = _quality_gate(result.get("text", ""), result.get("title", ""))
     if gate.get("warning"):
         return gate
-    return result
+    return gate
 
 
 def _parse_html(path: Path) -> dict:
     raw = path.read_text(encoding="utf-8", errors="replace")
+
+    try:
+        import trafilatura
+        extracted = trafilatura.extract(raw, include_comments=False, include_tables=True)
+        if extracted and len(extracted.strip()) > 200:
+            title_m = re.search(r"<title>(.*?)</title>", raw, re.I | re.S)
+            title = title_m.group(1).strip() if title_m else ""
+            text = _clean_lines(extracted, title=title)
+            return {"text": text, "title": title}
+    except ImportError:
+        pass
+
     try:
         from bs4 import BeautifulSoup
 

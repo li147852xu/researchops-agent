@@ -1,4 +1,4 @@
-.PHONY: install dev lint fmt test demo clean verify verify-llm verify-run
+.PHONY: install dev lint fmt test demo clean verify verify-llm verify-run evalset
 
 install:
 	pip install -e .
@@ -17,10 +17,10 @@ test:
 	pytest -v
 
 demo:
-	researchops run "demo topic" --mode fast --allow-net false --llm none
+	researchops run "demo topic" --mode fast --allow-net false --llm none --sources demo
 
 clean:
-	rm -rf runs/ dist/ *.egg-info src/*.egg-info .pytest_cache .ruff_cache
+	rm -rf runs/ runs_batch/ dist/ *.egg-info src/*.egg-info .pytest_cache .ruff_cache
 	find . -type d -name __pycache__ -exec rm -rf {} +
 
 verify:
@@ -31,3 +31,6 @@ verify-llm:
 
 verify-run:
 	python scripts/verify_run_integrity.py $(RUN)
+
+evalset:
+	python scripts/run_evalset.py

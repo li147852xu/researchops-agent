@@ -1,118 +1,158 @@
 # ResearchOps Agent
 
-A multi-agent research orchestration harness that decomposes complex research topics into structured pipelines: **plan -> collect -> read -> verify -> write -> qa -> eval**. Each stage is handled by a specialized agent with full trace auditing, checkpoint/resume/replay, sandboxed code execution, governed tool registry, and pluggable LLM reasoning.
+**Multi-agent research orchestration harness** — long-horizon task execution with traceable reports, verifiable artifacts, and reproducible runs.
 
-> Inspired by the quality bar of DeerFlow-style super agent harnesses — but built from scratch with an independent architecture.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Features
+## What it does
 
-- **Multi-agent pipeline** with explicit state machine (PLAN -> COLLECT -> READ -> VERIFY -> WRITE -> QA -> DONE)
-- **Pluggable LLM reasoning** — runs fully offline with `--llm none` (default); supports OpenAI-compatible endpoints (DeepSeek, OpenRouter, vLLM, Ollama, Azure) via `--llm openai_compat`
-- **Data pipeline integrity** — magic-number content detection, min-size thresholds, fake-PDF rejection, raw downloads separated from structured notes
-- **Plan refinement** — automatically detects low RQ coverage after READ and triggers additional collection rounds
-- **Conflict detection** — identifies opposing claims across sources, outputs `qa_conflicts.json`, and adds a Disagreements section to the report
-- **Checkpoint / Resume / Replay** — interrupt and continue from any stage; replay traces with `--no-tools` dry-run or `--json` machine-readable output
-- **Sandboxed execution** — subprocess sandbox with timeout, resource limits, network blocking (socket + http.client + urllib + requests + httpx), and log capture
-- **Self-correcting verification** — 3+ strategy types (TERMS, COMPARISON, TREND, integrity) with automatic error detection and script repair
-- **Quality gates** — parse rejects low-quality/code-heavy content; reader filters CSS/JS/template fragments; QA detects report garbage and triggers rollback
-- **Report traceability** — every sentence traced to source/claim via `report_index.json`; QA validates coverage
-- **Tool & Skill Registry** — schema-validated tool definitions with permission governance, risk levels, session + persistent caching
-- **Evaluation scoring** — citation coverage, source diversity, reproduction rate, unsupported claim rate, conflict count, cache hit rate, artifacts count
+ResearchOps Agent takes a research topic and runs a full pipeline:
 
-## Quick Start
+```
+PLAN → COLLECT → READ → VERIFY → WRITE → QA → EVAL
+```
+
+Each run produces a **workspace** with structured artifacts: plan, sources, reading notes, verification scripts + outputs, report with traceable citations, evaluation metrics, and a replay-able trace log.
+
+## Key capabilities
+
+- **arXiv-first + hybrid ingestion** — arXiv Atom API for paper search/download, web sources as supplement; `--sources {demo,arxiv,web,hybrid}`
+- **Evidence-first writing** — every report sentence must cite a source; unsupported sections trigger rollback
+- **Run-scoped retrieval** — BM25 index over extracted claims, used by Writer/QA/Verifier
+- **Sandbox verification** — scripts generated and executed in subprocess sandbox with self-correction on failure
+- **Data quality governance** — magic-number detection, boilerplate filtering, code density checks, low-quality source gating
+- **LLM ecosystem** — `--llm none` (rule-based) / `openai_compat` (DeepSeek/OpenAI/OpenRouter/vLLM) / `anthropic`
+- **Checkpoint/resume/replay** — interrupt and resume from state; replay trace with `--no-tools` dry-run
+- **Tool registry** — schema-validated tools with permission governance, caching, and auditing
+- **Evaluation** — 15+ metrics in `eval.json`; batch evaluation via `evalset/`
+
+## Quick start
 
 ```bash
-# Install
 pip install -e .
+pip install -e ".[dev]"      # pytest + ruff
+pip install -e ".[quality]"  # trafilatura for better HTML extraction
 
-# Offline demo (no network, no API key)
-researchops run "demo topic" --mode fast --allow-net false --llm none
+# Offline demo (no network, no LLM)
+researchops run "demo topic" --mode fast --allow-net false --llm none --sources demo
 
-# Deep research with DeepSeek
-researchops run "quantum computing safety" --mode deep --allow-net true \
+# arXiv-only (network required)
+researchops run "quantum computing" --mode deep --allow-net true --sources arxiv --llm none
+
+# Hybrid with DeepSeek
+researchops run "量子计算" --mode deep --allow-net true --sources hybrid \
   --llm openai_compat --llm-base-url https://api.deepseek.com/v1 \
-  --llm-provider-label deepseek --llm-model deepseek-chat
+  --llm-model deepseek-chat --llm-provider-label deepseek \
+  --llm-api-key "$LLM_API_KEY"
 
-# Resume interrupted run
+# Resume / Replay / Evaluate
 researchops resume runs/<run_id>
-
-# Replay trace (dry-run, machine-readable)
 researchops replay runs/<run_id> --no-tools --json
+researchops eval runs/<run_id>
+
+# Verify
+researchops verify-run runs/<run_id>
+researchops verify-repo
 ```
 
-Requires **Python 3.11+**.
-
-## CLI Reference
-
-```bash
-researchops run "<topic>" \
-  --mode {fast,deep} \
-  --allow-net {true,false} \
-  --llm {none,openai,openai_compat,anthropic} \
-  --llm-model "<model>" \
-  --llm-base-url "<url>" \
-  --llm-api-key "<key>" \
-  --llm-provider-label "<label>" \
-  --llm-headers '{"X-Custom": "value"}' \
-  --sandbox {subprocess,docker} \
-  --budget <float> --max-steps <int> --seed <int>
-
-researchops resume <run_dir>
-researchops replay <run_dir> [--from-step N] [--no-tools] [--json]
-researchops eval <run_dir>
-```
-
-API keys: `--llm-api-key`, or env vars `OPENAI_API_KEY` / `LLM_API_KEY` / `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY`.
-
-## Run Artifact Structure
+## Run workspace structure
 
 ```
 runs/<run_id>/
-  plan.json              Research questions, outline, thresholds
-  sources.jsonl          One source per line (only successfully fetched sources)
-  report.md              Synthesized report with [@source_id] citations
-  report_index.json      Traceability: sentence -> source/claim IDs
-  qa_conflicts.json      Detected claim conflicts per RQ
-  trace.jsonl            Full audit trail
-  eval.json              Evaluation metrics
-  state.json             Checkpoint for resume
-  cache.json             Persistent tool cache
-  downloads/             Raw downloaded HTML/PDF files
-  notes/                 Per-source structured reading cards (.json only)
-  code/                  Verification scripts + logs/
-  artifacts/             Verification results (json/csv)
+  plan.json              # Research questions + outline
+  sources.jsonl          # Collected sources (success only)
+  failures.json          # Failed source attempts
+  downloads/             # Raw HTML/PDF files
+  notes/                 # Structured reading cards (JSON)
+  code/                  # Verification scripts
+  code/logs/             # Sandbox stdout/stderr
+  artifacts/             # Verification outputs (JSON/CSV)
+  report.md              # Generated report with citations
+  report_index.json      # Sentence → claim/source mapping
+  retrieval_index.json   # BM25 claim index metadata
+  qa_report.json         # QA check results
+  qa_conflicts.json      # Detected claim conflicts
+  trace.jsonl            # Full event trace
+  eval.json              # Evaluation metrics
+  state.json             # Pipeline state (for resume)
+  cache.json             # Tool cache
 ```
+
+## CLI reference
+
+| Command | Description |
+|---------|-------------|
+| `run` | Full pipeline execution |
+| `resume` | Continue from checkpoint |
+| `replay` | Replay trace events |
+| `eval` | Recompute eval.json |
+| `verify-run` | Check run artifact integrity |
+| `verify-repo` | Check repository constraints |
+
+### Key `run` options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode` | fast | `fast` or `deep` |
+| `--sources` | hybrid | `demo`, `arxiv`, `web`, `hybrid` |
+| `--retrieval` | bm25 | `none`, `bm25` |
+| `--llm` | none | `none`, `openai_compat`, `anthropic` |
+| `--allow-net` | true | Network access control |
+| `--sandbox` | subprocess | `subprocess`, `docker` |
 
 ## Architecture
 
-| Agent | Stage | Responsibility |
-|-------|-------|---------------|
-| **Planner** | PLAN | Decompose topic into research questions and report outline |
-| **Collector** | COLLECT | Search and fetch sources via tool registry; fallback to offline samples |
-| **Reader** | READ | Extract claims with type, polarity, category, and evidence location |
-| **Verifier** | VERIFY | Run integrity + strategy-specific verification in sandbox; self-correct |
-| **Writer** | WRITE | Synthesize report with traceable citations and conflict notes |
-| **QA** | QA | Check traceability, coverage, diversity, conflicts; trigger rollbacks |
+```
+CLI → Orchestrator → Agents (Planner, Collector, Reader, Verifier, Writer, QA)
+                  ↓                    ↓
+           State Machine        Tool Registry (arxiv_search, fetch, parse, sandbox_exec, ...)
+                  ↓                    ↓
+           Checkpoint/Resume     Permission + Cache + Audit
+                  ↓
+           Retrieval (BM25) ← claims from Reader
+                  ↓
+           Writer/QA/Verifier consume ranked claims
+```
+
+## Evaluation
+
+Each run outputs `eval.json` with metrics including:
+
+- `citation_coverage` — ratio of paragraphs with citations
+- `unsupported_claim_rate` — sentences without evidence backing
+- `papers_per_rq` — arXiv papers per research question
+- `reproduction_rate` — verification script success rate
+- `section_nonempty_rate` — report sections with content
+- `low_quality_source_rate` — sources flagged as low quality
+- `conflict_count` — detected claim conflicts across sources
+
+Batch evaluation: `python scripts/run_evalset.py` runs all topics in `evalset/topics.jsonl` and produces `runs_batch/aggregate_metrics.json`.
 
 ## Security
 
-- **Sandbox**: working directory isolation, timeout, resource limits (Linux), network blocking (best-effort Python-level monkeypatching of socket/http.client/urllib/requests/httpx)
-- **Tool permissions**: `net` only granted with `--allow-net true`; denied calls logged in trace
-- **Limitation**: Python-level blocking is not OS-level isolation. Use `--sandbox docker` (when implemented) for full isolation.
-
-## Troubleshooting
-
-**Report contains doctype/meta/CSS/JS garbage**: Usually caused by failed source downloads (captcha pages, redirects, dynamic sites). Run `make verify-run RUN=runs/<id>` to identify broken sources. Use `--allow-net true` with reliable domains, or fall back to offline mode for clean demo output.
+- **Network blocking**: `--allow-net false` blocks all network access via monkeypatch (socket, http.client, urllib, requests, httpx). Strategy: best-effort; see trace for details.
+- **Sandbox**: subprocess with timeout and resource limits; Docker sandbox available as opt-in.
+- **Tool governance**: all external capabilities go through ToolRegistry with permission checks and audit logging.
+- **LLM keys**: never logged; resolved via `--llm-api-key` > env vars.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest -v
-ruff check src/ tests/
-make verify        # repo integrity checks
-make verify-run RUN=runs/<id>  # run data integrity
+make dev          # Install with dev deps
+make test         # Run pytest
+make lint         # Run ruff
+make fmt          # Auto-format
+make verify       # Repo verification
+make demo         # Quick offline demo
+make evalset      # Batch evaluation
 ```
+
+## Troubleshooting
+
+**Report contains doctype/meta/css/js garbage**: Usually caused by failed source fetches (captcha pages, paywalls). Use `make verify-run RUN=runs/<id>` to diagnose. Consider using `--sources arxiv` for cleaner inputs.
+
+**LLM not being used**: Check trace.jsonl for `llm.call` events. Verify API key is set. Run `python scripts/verify_llm_path.py runs/<id>` to audit.
 
 ## License
 
