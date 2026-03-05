@@ -60,11 +60,16 @@ class Claim(BaseModel):
     text: str
     evidence_spans: list[str] = Field(default_factory=list)
     supports_rq: list[str] = Field(default_factory=list)
+    category: str = ""
+    evidence_location: str = ""
 
 
 class SourceNotes(BaseModel):
     source_id: str
     claims: list[Claim] = Field(default_factory=list)
+    contribution: str = ""
+    method: str = ""
+    limitations: str = ""
 
 
 # ── State / Checkpoint ───────────────────────────────────────────────
@@ -130,6 +135,10 @@ class EvalResult(BaseModel):
     tool_calls: int = 0
     latency_sec: float = 0.0
     steps: int = 0
+    unsupported_claim_rate: float = 0.0
+    cache_hit_rate: float = 0.0
+    llm_enabled: bool = False
+    estimated_cost_usd: float = 0.0
 
 
 # ── Agent Result ──────────────────────────────────────────────────────

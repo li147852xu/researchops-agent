@@ -9,6 +9,7 @@ from researchops.models import AgentResult, StateSnapshot
 
 if TYPE_CHECKING:
     from researchops.config import RunConfig
+    from researchops.reasoning.base import ReasonerBase
     from researchops.registry.manager import ToolRegistry
     from researchops.sandbox.base import SandboxBase
     from researchops.trace import TraceLogger
@@ -22,6 +23,7 @@ class RunContext:
     registry: ToolRegistry
     trace: TraceLogger
     sandbox: SandboxBase
+    reasoner: ReasonerBase
     shared: dict = field(default_factory=dict)
 
 

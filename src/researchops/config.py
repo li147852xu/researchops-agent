@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,11 @@ class RunConfig(BaseModel):
     net_allowlist: list[str] = Field(default_factory=list)
     sandbox: SandboxBackend = SandboxBackend.SUBPROCESS
     run_dir: Path = Field(default=Path("runs"))
+    llm: Literal["none", "openai", "anthropic"] = "none"
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    seed: int = 42
 
     @property
     def max_collect(self) -> int:

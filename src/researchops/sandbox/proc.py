@@ -18,6 +18,7 @@ _NETBLOCK_PREAMBLE = textwrap.dedent("""\
         def _blocked_connect(self, *a, **kw):
             raise OSError("Network access blocked by ResearchOps sandbox")
         _socket.socket.connect = _blocked_connect
+
         try:
             import urllib.request
             _orig_urlopen = urllib.request.urlopen
@@ -26,12 +27,39 @@ _NETBLOCK_PREAMBLE = textwrap.dedent("""\
             urllib.request.urlopen = _blocked_urlopen
         except ImportError:
             pass
+
+        try:
+            import http.client as _hc
+            _orig_request = _hc.HTTPConnection.request
+            def _blocked_request(self, *a, **kw):
+                raise OSError("Network access blocked by ResearchOps sandbox")
+            _hc.HTTPConnection.request = _blocked_request
+            _hc.HTTPSConnection.request = _blocked_request
+        except Exception:
+            pass
+
+        try:
+            import requests as _req
+            _orig_get = _req.Session.send
+            def _blocked_send(self, *a, **kw):
+                raise OSError("Network access blocked by ResearchOps sandbox")
+            _req.Session.send = _blocked_send
+        except ImportError:
+            pass
+
+        try:
+            import httpx as _hx
+            _orig_hx_send = _hx.Client.send
+            def _blocked_hx_send(self, *a, **kw):
+                raise OSError("Network access blocked by ResearchOps sandbox")
+            _hx.Client.send = _blocked_hx_send
+        except ImportError:
+            pass
     # ── end preamble ──
 """)
 
 
 def _make_preexec(memory_mb: int = 512, cpu_sec: int = 60):
-    """Return a preexec_fn that sets resource limits on Linux."""
     if platform.system() != "Linux":
         return None
 
@@ -77,7 +105,7 @@ class SubprocessSandbox(SandboxBase):
         preexec = _make_preexec()
         resource_note = ""
         if platform.system() != "Linux":
-            resource_note = f"resource limits not enforced on {platform.system()}"
+            resource_note = f"resource_limits=unsupported on {platform.system()}"
 
         timed_out = False
         try:

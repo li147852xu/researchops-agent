@@ -8,7 +8,7 @@ from researchops.models import EvalResult, Source, TraceEvent
 from researchops.trace import TraceLogger
 
 
-def compute_eval(run_dir: Path) -> EvalResult:
+def compute_eval(run_dir: Path, *, llm_enabled: bool = False) -> EvalResult:
     report_path = run_dir / "report.md"
     sources = _load_sources(run_dir)
     trace = TraceLogger(run_dir / "trace.jsonl")
@@ -20,6 +20,8 @@ def compute_eval(run_dir: Path) -> EvalResult:
     tool_calls = _count_tool_calls(events)
     latency = _compute_latency(events)
     steps = _count_steps(events)
+    unsupported = _unsupported_claim_rate(run_dir)
+    cache_hit = _cache_hit_rate(events)
 
     result = EvalResult(
         citation_coverage=citation_cov,
@@ -28,6 +30,10 @@ def compute_eval(run_dir: Path) -> EvalResult:
         tool_calls=tool_calls,
         latency_sec=latency,
         steps=steps,
+        unsupported_claim_rate=unsupported,
+        cache_hit_rate=cache_hit,
+        llm_enabled=llm_enabled,
+        estimated_cost_usd=0.0,
     )
 
     eval_path = run_dir / "eval.json"
@@ -42,7 +48,7 @@ def _citation_coverage(report_path: Path) -> float:
     paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 50]
     if not paragraphs:
         return 0.0
-    cited = sum(1 for p in paragraphs if re.search(r"\[\d+\]", p))
+    cited = sum(1 for p in paragraphs if re.search(r"\[@\w+\]", p))
     return round(cited / len(paragraphs), 3)
 
 
@@ -62,9 +68,7 @@ def _reproduction_rate(events: list[TraceEvent]) -> float:
     execs = [e for e in events if e.action == "sandbox_exec"]
     if not execs:
         return 1.0
-    successes = sum(
-        1 for e in events if e.action == "sandbox_success"
-    )
+    successes = sum(1 for e in events if e.action == "sandbox_success")
     return round(successes / len(execs), 3) if execs else 1.0
 
 
@@ -73,8 +77,7 @@ def _count_tool_calls(events: list[TraceEvent]) -> int:
 
 
 def _compute_latency(events: list[TraceEvent]) -> float:
-    run_events = [e for e in events if e.action in ("run_start", "run_complete")]
-    for e in run_events:
+    for e in events:
         if e.action == "run_complete" and e.duration_ms > 0:
             return round(e.duration_ms / 1000, 2)
     total = sum(e.duration_ms for e in events) / 1000
@@ -87,6 +90,29 @@ def _count_steps(events: list[TraceEvent]) -> int:
         if e.stage and e.action in ("start", "complete"):
             stages_seen.add(e.stage)
     return len(stages_seen)
+
+
+def _unsupported_claim_rate(run_dir: Path) -> float:
+    index_path = run_dir / "report_index.json"
+    if not index_path.exists():
+        return 0.0
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        entries = index.get("entries", [])
+        if not entries:
+            return 0.0
+        unsupported = sum(1 for e in entries if not e.get("claim_ids"))
+        return round(unsupported / len(entries), 3)
+    except Exception:
+        return 0.0
+
+
+def _cache_hit_rate(events: list[TraceEvent]) -> float:
+    invokes = sum(1 for e in events if e.action in ("invoke", "cache_hit"))
+    hits = sum(1 for e in events if e.action == "cache_hit")
+    if invokes == 0:
+        return 0.0
+    return round(hits / invokes, 3)
 
 
 def _load_sources(run_dir: Path) -> list[Source]:

@@ -13,6 +13,13 @@ from researchops.models import (
     SourceNotes,
 )
 
+_CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "contribution": ["propose", "introduce", "present", "novel", "contribution", "develop", "design"],
+    "method": ["method", "approach", "technique", "algorithm", "framework", "architecture", "implement"],
+    "limitation": ["challenge", "limit", "problem", "issue", "drawback", "barrier", "difficult", "gap"],
+    "finding": ["result", "show", "demonstrate", "find", "observe", "evidence", "significant", "suggest"],
+}
+
 
 class ReaderAgent(AgentBase):
     name = "reader"
@@ -32,10 +39,21 @@ class ReaderAgent(AgentBase):
 
         for src in sources:
             text = self._extract_text(src, ctx)
-            claims = self._extract_claims(src.source_id, text, rq_ids)
+            paragraphs = self._split_paragraphs(text)
+            claims = self._extract_claims(src.source_id, paragraphs, rq_ids)
             total_claims += len(claims)
 
-            notes = SourceNotes(source_id=src.source_id, claims=claims)
+            contribution = self._extract_section(text, "contribution")
+            method = self._extract_section(text, "method")
+            limitations = self._extract_section(text, "limitation")
+
+            notes = SourceNotes(
+                source_id=src.source_id,
+                claims=claims,
+                contribution=contribution,
+                method=method,
+                limitations=limitations,
+            )
             out_path = notes_dir / f"{src.source_id}.json"
             out_path.write_text(notes.model_dump_json(indent=2), encoding="utf-8")
 
@@ -73,35 +91,72 @@ class ReaderAgent(AgentBase):
         except Exception:
             return Path(src.local_path).read_text(encoding="utf-8", errors="replace")
 
+    def _split_paragraphs(self, text: str) -> list[tuple[int, str]]:
+        paragraphs = []
+        for i, para in enumerate(re.split(r"\n\s*\n", text)):
+            stripped = para.strip()
+            if len(stripped) > 30:
+                paragraphs.append((i, stripped))
+        return paragraphs
+
     def _extract_claims(
-        self, source_id: str, text: str, rq_ids: list[str]
+        self, source_id: str, paragraphs: list[tuple[int, str]], rq_ids: list[str]
     ) -> list[Claim]:
-        if not text.strip():
-            return []
-
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        meaningful = [s.strip() for s in sentences if len(s.strip()) > 30]
-
         claims: list[Claim] = []
-        for i, sentence in enumerate(meaningful[:10]):
-            supports = []
-            lower = sentence.lower()
-            if any(kw in lower for kw in ("current", "state", "research", "study")):
-                supports = [r for r in rq_ids if "state" in r or "overview" in r]
-            elif any(kw in lower for kw in ("challenge", "limit", "problem", "issue")):
-                supports = [r for r in rq_ids if "challenge" in r]
-            elif any(kw in lower for kw in ("future", "direction", "trend", "emerging")):
-                supports = [r for r in rq_ids if "future" in r]
-            else:
-                supports = rq_ids[:1]
+        for para_idx, para in paragraphs[:15]:
+            sentences = re.split(r"(?<=[.!?])\s+", para)
+            for _si, sentence in enumerate(sentences):
+                sentence = sentence.strip()
+                if len(sentence) < 30:
+                    continue
 
-            claims.append(
-                Claim(
-                    claim_id=f"{source_id}_c{i}",
-                    text=sentence[:300],
-                    evidence_spans=[sentence[:150]],
-                    supports_rq=supports,
+                category = self._classify_sentence(sentence)
+                supports = self._match_rqs(sentence, rq_ids)
+                evidence_loc = f"paragraph_{para_idx}"
+
+                claims.append(
+                    Claim(
+                        claim_id=f"{source_id}_c{len(claims)}",
+                        text=sentence[:300],
+                        evidence_spans=[sentence[:150]],
+                        supports_rq=supports,
+                        category=category,
+                        evidence_location=evidence_loc,
+                    )
                 )
-            )
-
+                if len(claims) >= 15:
+                    return claims
         return claims
+
+    def _classify_sentence(self, sentence: str) -> str:
+        lower = sentence.lower()
+        scores: dict[str, int] = {}
+        for cat, keywords in _CATEGORY_KEYWORDS.items():
+            scores[cat] = sum(1 for kw in keywords if kw in lower)
+        best = max(scores, key=lambda k: scores[k])
+        return best if scores[best] > 0 else "other"
+
+    def _match_rqs(self, sentence: str, rq_ids: list[str]) -> list[str]:
+        lower = sentence.lower()
+        matched = []
+        for rq_id in rq_ids:
+            tag = rq_id.replace("rq_", "")
+            if tag in lower:
+                matched.append(rq_id)
+        if not matched:
+            if any(kw in lower for kw in ("current", "state", "research", "study")):
+                matched = [r for r in rq_ids if "state" in r or "overview" in r]
+            elif any(kw in lower for kw in ("challenge", "limit", "problem")):
+                matched = [r for r in rq_ids if "challenge" in r]
+            elif any(kw in lower for kw in ("future", "direction", "trend", "emerging")):
+                matched = [r for r in rq_ids if "future" in r]
+        return matched or rq_ids[:1]
+
+    def _extract_section(self, text: str, section_type: str) -> str:
+        keywords = _CATEGORY_KEYWORDS.get(section_type, [])
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        relevant = []
+        for s in sentences:
+            if any(kw in s.lower() for kw in keywords) and len(s.strip()) > 30:
+                relevant.append(s.strip())
+        return " ".join(relevant[:3])

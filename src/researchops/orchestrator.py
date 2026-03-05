@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from researchops.agents.writer import WriterAgent
 from researchops.checkpoint import advance_stage, load_state, save_state, should_skip
 from researchops.config import RunConfig, SandboxBackend
 from researchops.models import STAGE_ORDER, Stage, StateSnapshot
+from researchops.reasoning import create_reasoner
 from researchops.registry.builtin import register_builtin_tools
 from researchops.registry.manager import ToolRegistry
 from researchops.sandbox.proc import SubprocessSandbox
@@ -39,16 +41,27 @@ class Orchestrator:
         self.trace = TraceLogger(run_dir / "trace.jsonl")
         self.registry = self._build_registry()
         self.sandbox = self._build_sandbox()
+        self.reasoner = create_reasoner(config)
         self.state = self._init_state()
 
     def _build_registry(self) -> ToolRegistry:
         registry = ToolRegistry()
         register_builtin_tools(registry)
+        registry.set_persistent_cache_path(self.run_dir / "cache.json")
 
         perms: set[str] = {"sandbox"}
         if self.config.allow_net:
             perms.add("net")
         registry.grant_permissions(perms)
+
+        self.trace.log(
+            stage="ORCHESTRATOR",
+            action="registry_init",
+            meta={
+                "granted_permissions": list(perms),
+                "sandbox_strategy": "best_effort" if not self.config.allow_net else "open",
+            },
+        )
         return registry
 
     def _build_sandbox(self) -> SubprocessSandbox:
@@ -75,6 +88,7 @@ class Orchestrator:
             registry=self.registry,
             trace=self.trace,
             sandbox=self.sandbox,
+            reasoner=self.reasoner,
         )
 
     def run(self) -> None:
@@ -118,7 +132,7 @@ class Orchestrator:
             if result.rollback_to is not None:
                 rollback_target = result.rollback_to
                 console.print(
-                    f"  [yellow]QA rollback → {rollback_target.value}: {result.message}[/]"
+                    f"  [yellow]Rollback → {rollback_target.value}: {result.message}[/]"
                 )
                 self.trace.log(
                     stage=stage.value,
@@ -129,6 +143,9 @@ class Orchestrator:
                 self.state.stage = rollback_target
                 if rollback_target in self.state.completed_stages:
                     self.state.completed_stages.remove(rollback_target)
+                for s in STAGE_ORDER:
+                    if STAGE_ORDER.index(s) > STAGE_ORDER.index(rollback_target) and s in self.state.completed_stages:
+                        self.state.completed_stages.remove(s)
                 save_state(self.state, self.run_dir)
                 return self.run()
 
@@ -141,10 +158,13 @@ class Orchestrator:
         elapsed = time.monotonic() - t0
         self.state.stage = Stage.DONE
         save_state(self.state, self.run_dir)
+
+        reasoner_stats = self.reasoner.get_stats()
         self.trace.log(
             stage="ORCHESTRATOR",
             action="run_complete",
             duration_ms=elapsed * 1000,
+            meta={"reasoner_stats": reasoner_stats},
         )
         console.print(f"\n[bold green]Run complete[/] in {elapsed:.1f}s → {self.run_dir}")
 
@@ -166,7 +186,12 @@ def resume_run(run_dir: Path) -> None:
     orch.run()
 
 
-def replay_run(run_dir: Path, from_step: int = 0, no_tools: bool = False) -> None:
+def replay_run(
+    run_dir: Path,
+    from_step: int = 0,
+    no_tools: bool = False,
+    json_output: bool = False,
+) -> None:
     trace_path = run_dir / "trace.jsonl"
     if not trace_path.exists():
         console.print(f"[red]No trace.jsonl found in {run_dir}[/]")
@@ -175,7 +200,23 @@ def replay_run(run_dir: Path, from_step: int = 0, no_tools: bool = False) -> Non
     logger = TraceLogger(trace_path)
     events = logger.read_all()
 
-    console.print(f"[bold]Replaying {len(events)} events from {run_dir}[/]\n")
+    if json_output:
+        output = []
+        for i, ev in enumerate(events):
+            if i < from_step:
+                continue
+            entry = ev.model_dump()
+            if no_tools and ev.action == "invoke":
+                entry["dry_run"] = True
+                entry["note"] = f"Would invoke tool={ev.tool}"
+            output.append(entry)
+        print(json.dumps(output, indent=2, default=str))
+        return
+
+    console.print(f"[bold]Replaying {len(events)} events from {run_dir}[/]")
+    if no_tools:
+        console.print("[yellow]Dry-run mode: tool invocations shown but not executed[/]")
+    console.print()
 
     for i, ev in enumerate(events):
         if i < from_step:
@@ -187,7 +228,11 @@ def replay_run(run_dir: Path, from_step: int = 0, no_tools: bool = False) -> Non
         tool_str = f"tool={ev.tool}" if ev.tool else ""
         err_str = f"[red]ERR: {ev.error}[/]" if ev.error else ""
 
-        parts = [p for p in [prefix, stage_str, agent_str, ev.action, tool_str, err_str] if p]
+        action_label = ev.action
+        if no_tools and ev.action == "invoke":
+            action_label = "[dim]WOULD_INVOKE[/]"
+
+        parts = [p for p in [prefix, stage_str, agent_str, action_label, tool_str, err_str] if p]
         console.print(" ".join(parts))
 
         if ev.output_summary:

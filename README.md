@@ -1,41 +1,50 @@
 # ResearchOps Agent
 
-A multi-agent research orchestration harness that decomposes complex research topics into structured pipelines: **plan → collect → read → verify → write → qa → eval**. Each stage is handled by a specialized agent with full trace auditing, checkpoint/resume capability, sandboxed code execution, and a governed tool registry.
+A multi-agent research orchestration harness that decomposes complex research topics into structured pipelines: **plan -> collect -> read -> verify -> write -> qa -> eval**. Each stage is handled by a specialized agent with full trace auditing, checkpoint/resume/replay, sandboxed code execution, governed tool registry, and pluggable LLM reasoning.
 
 ## Features
 
-- **Multi-agent pipeline** with explicit state machine orchestration (PLAN → COLLECT → READ → VERIFY → WRITE → QA → DONE)
-- **Checkpoint / Resume / Replay** — interrupt and continue from any stage; replay execution traces for auditing
-- **Sandboxed execution** — subprocess sandbox with timeout, resource limits (Linux cgroups), network blocking via monkeypatch, and log capture
-- **Tool & Skill Registry** — schema-validated tool definitions with permission governance, risk levels, caching policies
-- **Structured run artifacts** — every run produces a fixed directory of plan, sources, notes, code, artifacts, report, trace, eval
-- **Evaluation scoring** — citation coverage, source diversity, reproduction rate, tool call counts, latency
-- **Offline demo mode** — runs end-to-end without network access using built-in sample data
+- **Multi-agent pipeline** with explicit state machine (PLAN -> COLLECT -> READ -> VERIFY -> WRITE -> QA -> DONE)
+- **Pluggable LLM reasoning** — runs fully offline with `--llm none` (default), or enhanced with `--llm openai` / `--llm anthropic`
+- **Checkpoint / Resume / Replay** — interrupt and continue from any stage; replay traces with `--no-tools` dry-run or `--json` machine-readable output
+- **Sandboxed execution** — subprocess sandbox with timeout, resource limits, network blocking (socket + http.client + urllib + requests + httpx), and log capture
+- **Self-correcting verification** — two verification types (integrity + analysis) with automatic error detection and script repair (2-3 retries)
+- **Report traceability** — every sentence traced to source/claim via `report_index.json`; QA validates coverage
+- **Tool & Skill Registry** — schema-validated tool definitions with permission governance, risk levels, session + persistent caching
+- **Evaluation scoring** — citation coverage, source diversity, reproduction rate, unsupported claim rate, cache hit rate, tool calls, latency
 
 ## Installation
 
 ```bash
-# Clone and install
 git clone <repo-url> && cd researchops-agent
 pip install -e .
 
-# With dev dependencies (pytest, ruff)
+# With dev dependencies
 pip install -e ".[dev]"
+
+# With LLM support (optional)
+pip install -e ".[llm-openai]"
 ```
 
 Requires **Python 3.11+**.
 
-## CLI Usage
-
-### Run a research pipeline
+## Quick Start
 
 ```bash
-researchops run "large language model safety" --mode deep --allow-net true
-
-# Offline demo (no network, uses built-in sample data)
+# Offline demo (no network, no API key needed)
 researchops run "demo topic" --mode fast --allow-net false
 
-# Full options
+# With network search
+researchops run "large language model safety" --mode deep --allow-net true
+
+# With LLM-enhanced reasoning
+researchops run "quantum computing" --mode deep --llm openai --llm-api-key $OPENAI_API_KEY
+```
+
+## CLI Reference
+
+```bash
+# Full run options
 researchops run "<topic>" \
   --mode {fast,deep} \
   --checkpoint <path> \
@@ -43,137 +52,125 @@ researchops run "<topic>" \
   --max-steps <int> \
   --allow-net {true,false} \
   --net-allowlist "arxiv.org,scholar.google.com" \
-  --sandbox {subprocess,docker}
-```
+  --sandbox {subprocess,docker} \
+  --llm {none,openai,anthropic} \
+  --llm-model "<model>" \
+  --llm-base-url "<url>" \
+  --llm-api-key "<key>" \
+  --seed <int>
 
-### Resume an interrupted run
-
-```bash
+# Resume interrupted run
 researchops resume runs/<run_id>
-```
 
-### Replay a trace
-
-```bash
+# Replay trace
 researchops replay runs/<run_id> --from-step 5
-researchops replay runs/<run_id> --no-tools
-```
+researchops replay runs/<run_id> --no-tools          # dry-run
+researchops replay runs/<run_id> --json               # machine-readable
 
-### Recompute evaluation
-
-```bash
+# Recompute evaluation
 researchops eval runs/<run_id>
 ```
 
 ## Run Artifact Structure
 
-Each run produces a fixed directory layout:
-
 ```
 runs/<run_id>/
-  plan.json           Research questions, outline, acceptance thresholds
-  sources.jsonl       One source per line (id, type, url, domain, hash)
-  report.md           Final synthesized report with citation markers
-  trace.jsonl         Full audit trail of all agent/tool actions
-  eval.json           Evaluation metrics
-  state.json          Checkpoint state for resume
-  notes/              Per-source claim extractions (.json)
-  code/               Verification scripts
-    logs/             stdout/stderr per sandbox execution
-  artifacts/          Generated charts, tables, CSVs
+  plan.json             Research questions, outline, thresholds
+  sources.jsonl         One source per line (id, type, url, domain, hash)
+  report.md             Synthesized report with [@source_id] citations
+  report_index.json     Traceability: sentence -> source/claim IDs
+  trace.jsonl           Full audit trail of all agent/tool actions
+  eval.json             Evaluation metrics
+  state.json            Checkpoint for resume
+  cache.json            Persistent tool cache
+  notes/                Per-source claim extractions (.json)
+  code/                 Verification scripts
+    logs/               stdout/stderr per sandbox execution
+  artifacts/            Verification results (json/csv)
 ```
 
 ## Architecture
-
-### Agent Roles
 
 | Agent | Stage | Responsibility |
 |-------|-------|---------------|
 | **Planner** | PLAN | Decompose topic into research questions and report outline |
 | **Collector** | COLLECT | Search and fetch sources via tool registry |
-| **Reader** | READ | Extract structured claims from each source |
-| **Verifier** | VERIFY | Generate and run verification scripts in sandbox |
-| **Writer** | WRITE | Synthesize report with citation markers |
-| **QA** | QA | Check citation coverage, source diversity; trigger rollbacks |
-
-### Tool Registry
-
-All external capabilities are accessed through a governed registry. Each tool has:
-
-- **Schema** — typed input/output definitions
-- **Risk level** — low / medium / high
-- **Permissions** — required permission set (e.g. `net`, `sandbox`)
-- **Timeout** — per-tool default
-- **Cache policy** — none / session / persistent
-
-Built-in tools: `web_search`, `fetch`, `parse`, `sandbox_exec`, `cite`.
+| **Reader** | READ | Extract structured claims with categories and evidence locations |
+| **Verifier** | VERIFY | Run integrity + analysis verification scripts in sandbox; self-correct on failure |
+| **Writer** | WRITE | Synthesize report with traceable citation markers; generate report_index.json |
+| **QA** | QA | Check traceability, coverage, diversity; trigger multi-level rollbacks |
 
 ### State Machine
 
 ```
-PLAN → COLLECT → READ → VERIFY → WRITE → QA → DONE
-                                          ↑     |
-                                          +-----+
-                                        (rollback)
+PLAN -> COLLECT -> READ -> VERIFY -> WRITE -> QA -> DONE
+                    ^       ^         ^        |
+                    +-------+---------+--------+
+                           (rollback)
 ```
 
-QA can trigger partial rollback to WRITE (or earlier stages). Retry budgets prevent infinite loops.
+QA can roll back to READ (missing claims), VERIFY (failed verification), or WRITE (low coverage).
+
+### Tool Registry
+
+All external capabilities go through the governed registry:
+
+- **Schema** — typed input/output definitions
+- **Permissions** — `net`, `sandbox`, `fs`; denied tools logged in trace
+- **Cache** — session (in-memory) or persistent (cache.json per run)
+- **Risk levels** — low / medium / high
+
+Built-in tools: `web_search`, `fetch`, `parse`, `sandbox_exec`, `cite`.
 
 ## Evaluation Metrics
 
 `eval.json` contains:
 
-- `citation_coverage` — ratio of report paragraphs containing citation markers
-- `source_diversity` — unique domain count and source type distribution
-- `reproduction_rate` — sandbox verification script success rate
-- `tool_calls` — total tool invocations during the run
-- `latency_sec` — total pipeline execution time
-- `steps` — number of pipeline stages executed
+- `citation_coverage` — ratio of paragraphs with citation markers
+- `source_diversity` — unique domains and type distribution
+- `reproduction_rate` — verification script success rate
+- `unsupported_claim_rate` — report sentences not traceable to claims/sources
+- `cache_hit_rate` — tool cache utilization
+- `tool_calls` / `latency_sec` / `steps`
+- `llm_enabled` / `estimated_cost_usd`
 
 ## Security
 
 ### Sandbox Constraints
 
-The subprocess sandbox enforces:
-
-1. **Working directory isolation** — scripts execute in `runs/<id>/code/` only
-2. **Timeout enforcement** — configurable per-run, kills hung processes
-3. **Resource limits** — on Linux, `resource.setrlimit` caps memory and CPU; on macOS/Windows, limits degrade gracefully (recorded in trace)
+1. **Working directory isolation** — scripts run in `runs/<id>/code/` only
+2. **Timeout enforcement** — configurable, kills hung processes
+3. **Resource limits** — Linux: `resource.setrlimit` for memory/CPU; macOS/Windows: graceful degradation recorded in trace
 4. **Network blocking** (`--allow-net false`):
-   - Sets `RESEARCHOPS_NO_NET=1` environment variable
-   - Injects a preamble that monkeypatches `socket.connect`, `urllib.request.urlopen` to raise `OSError`
-   - **Limitation**: This is a best-effort block at the Python level. It does not provide OS-level network namespace isolation. A determined script could bypass it via ctypes or subprocess calls. For full network isolation, use `--sandbox docker` (when implemented) or run within an external network-restricted environment.
-5. **Log capture** — all stdout/stderr written to `code/logs/<step>.out|.err`
+   - Monkeypatches: `socket.connect`, `urllib.request.urlopen`, `http.client.HTTP(S)Connection.request`, `requests.Session.send`, `httpx.Client.send`
+   - Environment: `RESEARCHOPS_NO_NET=1`
+   - **Limitation**: Best-effort Python-level blocking. Does not provide OS-level network namespace isolation. Use `--sandbox docker` (when implemented) for full isolation.
+5. **Log capture** — stdout/stderr to `code/logs/<step>.out|.err`
 
 ### Tool Permissions
 
-Agents cannot invoke tools without the required permissions being granted. The `net` permission is only granted when `--allow-net true`. The `sandbox` permission is always granted for verification.
+- `net` permission only granted with `--allow-net true`
+- Denied tool calls logged in trace with `action=permission_denied` before raising error
+- Collector gracefully falls back to built-in samples when `net` tools are denied
 
 ## Development
 
 ```bash
-# Install dev dependencies
 pip install -e ".[dev]"
-
-# Run tests
 pytest -v
-
-# Lint and format
 ruff check src/ tests/
 ruff format src/ tests/
-
-# Run offline demo
 make demo
 ```
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Ensure tests pass (`pytest -v`) and code is formatted (`ruff format .`)
-4. Submit a pull request with a clear description
+2. Create a feature branch
+3. Ensure `pytest -v` passes and `ruff check .` is clean
+4. Submit a pull request
 
-All external tool integrations must go through the tool registry. Direct use of `requests`, `subprocess`, or network calls from agent code is prohibited by design.
+All external tool integrations must go through the tool registry.
 
 ## License
 

@@ -55,11 +55,24 @@ def test_log_files_created(sandbox: SubprocessSandbox, tmp_run_dir: Path):
     assert "logged" in (logs_dir / "logtest.out").read_text(encoding="utf-8")
 
 
-def test_net_blocked(sandbox: SubprocessSandbox, tmp_run_dir: Path):
+def test_net_blocked_socket(sandbox: SubprocessSandbox, tmp_run_dir: Path):
     code_dir = tmp_run_dir / "code"
     script = code_dir / "nettest.py"
     script.write_text(
         'import socket; s = socket.socket(); s.connect(("1.1.1.1", 80))',
+        encoding="utf-8",
+    )
+
+    result = sandbox.execute(script, code_dir, timeout=10, allow_net=False)
+    assert result.exit_code != 0
+
+
+def test_net_blocked_http_client(sandbox: SubprocessSandbox, tmp_run_dir: Path):
+    """http.client should also be blocked when allow_net=False."""
+    code_dir = tmp_run_dir / "code"
+    script = code_dir / "httptest.py"
+    script.write_text(
+        'import http.client; c = http.client.HTTPConnection("example.com"); c.request("GET", "/")',
         encoding="utf-8",
     )
 

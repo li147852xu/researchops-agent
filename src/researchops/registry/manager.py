@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from researchops.registry.schema import ToolDefinition
@@ -24,7 +25,23 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self._handlers: dict[str, ToolHandler] = {}
         self._session_cache: dict[str, Any] = {}
+        self._persistent_cache: dict[str, Any] = {}
+        self._persistent_cache_path: Path | None = None
         self._granted_permissions: set[str] = set()
+
+    def set_persistent_cache_path(self, path: Path) -> None:
+        self._persistent_cache_path = path
+        if path.exists():
+            try:
+                self._persistent_cache = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                self._persistent_cache = {}
+
+    def _save_persistent_cache(self) -> None:
+        if self._persistent_cache_path is not None:
+            self._persistent_cache_path.write_text(
+                json.dumps(self._persistent_cache, indent=2, default=str), encoding="utf-8"
+            )
 
     def register(self, definition: ToolDefinition, handler: ToolHandler) -> None:
         self._tools[definition.name] = definition
@@ -39,15 +56,22 @@ class ToolRegistry:
     def grant_permissions(self, perms: set[str]) -> None:
         self._granted_permissions |= perms
 
-    def _check_permissions(self, defn: ToolDefinition) -> None:
+    def _check_permissions(self, defn: ToolDefinition, trace: TraceLogger | None) -> None:
         missing = set(defn.permissions) - self._granted_permissions
         if missing:
+            if trace:
+                trace.log(
+                    tool=defn.name,
+                    action="permission_denied",
+                    error=f"Missing permissions: {missing}",
+                    meta={"required": list(defn.permissions), "granted": list(self._granted_permissions)},
+                )
             raise ToolPermissionError(
                 f"Tool '{defn.name}' requires permissions: {missing}"
             )
 
     def _cache_key(self, name: str, params: dict[str, Any]) -> str:
-        raw = json.dumps({"tool": name, **params}, sort_keys=True)
+        raw = json.dumps({"tool": name, **params}, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def invoke(
@@ -59,14 +83,21 @@ class ToolRegistry:
         defn = self._tools.get(name)
         if defn is None:
             raise KeyError(f"Tool '{name}' not registered")
-        self._check_permissions(defn)
+        self._check_permissions(defn, trace)
 
-        if defn.cache_policy == "session":
-            ck = self._cache_key(name, params)
-            if ck in self._session_cache:
-                if trace:
-                    trace.log(tool=name, action="cache_hit", input_summary=str(params)[:200])
-                return self._session_cache[ck]
+        ck = self._cache_key(name, params)
+
+        if defn.cache_policy == "session" and ck in self._session_cache:
+            if trace:
+                trace.log(tool=name, action="cache_hit", input_summary=str(params)[:200],
+                          meta={"cache_type": "session"})
+            return self._session_cache[ck]
+
+        if defn.cache_policy == "persistent" and ck in self._persistent_cache:
+            if trace:
+                trace.log(tool=name, action="cache_hit", input_summary=str(params)[:200],
+                          meta={"cache_type": "persistent"})
+            return self._persistent_cache[ck]
 
         t0 = time.monotonic()
         error_msg: str | None = None
@@ -89,7 +120,10 @@ class ToolRegistry:
                 )
 
         if defn.cache_policy == "session":
-            self._session_cache[self._cache_key(name, params)] = result
+            self._session_cache[ck] = result
+        elif defn.cache_policy == "persistent":
+            self._persistent_cache[ck] = result
+            self._save_persistent_cache()
 
         return result
 

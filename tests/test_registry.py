@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from researchops.registry.manager import ToolPermissionError, ToolRegistry
 from researchops.registry.schema import ToolDefinition
+from researchops.trace import TraceLogger
 
 
 def _echo_handler(**kwargs):
@@ -24,6 +27,23 @@ def test_permission_denied():
     reg.register(defn, _echo_handler)
     with pytest.raises(ToolPermissionError):
         reg.invoke("restricted", {})
+
+
+def test_permission_denied_with_trace(tmp_run_dir: Path):
+    """Permission denial should be recorded in trace."""
+    reg = ToolRegistry()
+    defn = ToolDefinition(name="net_tool", permissions=["net"])
+    reg.register(defn, _echo_handler)
+
+    trace = TraceLogger(tmp_run_dir / "trace.jsonl")
+
+    with pytest.raises(ToolPermissionError):
+        reg.invoke("net_tool", {"q": "test"}, trace=trace)
+
+    events = trace.read_all()
+    denied = [e for e in events if e.action == "permission_denied"]
+    assert len(denied) == 1
+    assert denied[0].tool == "net_tool"
 
 
 def test_permission_granted():
@@ -69,6 +89,31 @@ def test_session_cache():
     r3 = reg.invoke("cached", {"key": "b"})
     assert r3 != r1
     assert call_count == 2
+
+
+def test_persistent_cache(tmp_run_dir: Path):
+    """Persistent cache should save to disk and survive reload."""
+    call_count = 0
+
+    def counting_handler(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {"result": call_count}
+
+    cache_path = tmp_run_dir / "cache.json"
+
+    reg = ToolRegistry()
+    reg.set_persistent_cache_path(cache_path)
+    defn = ToolDefinition(name="pcached", cache_policy="persistent", permissions=[])
+    reg.register(defn, counting_handler)
+
+    r1 = reg.invoke("pcached", {"key": "x"})
+    assert call_count == 1
+    assert cache_path.exists()
+
+    r2 = reg.invoke("pcached", {"key": "x"})
+    assert r2 == r1
+    assert call_count == 1
 
 
 def test_list_tools():
