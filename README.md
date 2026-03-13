@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.0-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -145,7 +145,7 @@ PLAN → COLLECT → READ → VERIFY → WRITE → QA → EVAL
 |-------|---------------|--------|
 | **Planner** | Generates research questions, report outline, coverage checklist | `plan.json` |
 | **Collector** | Searches arXiv / web, downloads sources, deduplicates | `sources.jsonl` |
-| **Reader** | Extracts structured claims with chunked text processing | `notes/<source_id>.json` |
+| **Reader** | Multi-strategy HTML parsing (trafilatura/readability/bs4), structured claim extraction with chunked processing | `notes/<source_id>.json` |
 | **Verifier** | Generates and runs verification scripts in sandbox | `code/`, `artifacts/` |
 | **Writer** | Produces evidence-backed report with mandatory citations | `report.md` |
 | **QA** | Checks coverage, diversity, conflicts; triggers rollbacks | `qa_report.json` |
@@ -374,7 +374,7 @@ python scripts/run_evalset.py
 - **Network isolation**: `--allow-net false` blocks all network access
 - **Sandbox isolation**: Verification scripts run in subprocess sandbox with timeout and resource limits
 - **Tool governance**: All external capabilities route through the Tool Registry with schema validation and permission checks
-- **API key handling**: Keys are never logged in trace
+- **API key handling**: Keys are never logged in trace; `state.json` redacts sensitive fields (`llm_api_key`, `llm_headers`) via `RunConfig.safe_dump()`
 
 ## Development
 

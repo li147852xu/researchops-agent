@@ -151,7 +151,7 @@ class Orchestrator:
             return existing
         state = StateSnapshot(
             run_id=self.run_dir.name,
-            config_snapshot=self.config.model_dump(mode="json"),
+            config_snapshot=self.config.safe_dump(),
         )
         save_state(state, self.run_dir)
         return state

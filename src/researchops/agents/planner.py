@@ -12,7 +12,7 @@ from researchops.models import (
     PlanOutput,
     ResearchQuestion,
 )
-from researchops.prompts import PLANNER_BUCKETS, PLANNER_RQS, parse_json_response
+from researchops.prompts import PLANNER_BUCKETS, PLANNER_HEADINGS, PLANNER_RQS, parse_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,32 @@ _GENERIC_BUCKETS = [
     {"bucket_id": "bkt_challenges", "bucket_name": "challenges", "description": "Challenges, limitations, and open problems"},
     {"bucket_id": "bkt_future", "bucket_name": "future", "description": "Future directions and emerging trends"},
 ]
+
+
+_RQ_PREFIX_PATTERNS = [
+    r"What are the (?:main |key |primary |major |core )?",
+    r"What is the (?:current |present )?(?:state of (?:research on |the art in )?)?",
+    r"What is ",
+    r"How (?:do|does|can|could|has|have) (?:\w+ ){0,3}",
+    r"Why (?:do|does|is|are) (?:\w+ ){0,2}",
+    r"What (?:role does|impact does) .{0,30}? have on ",
+    r"What (?:are|is) ",
+]
+
+
+def _rq_to_heading(text: str) -> str:
+    """Convert a research question to a concise section heading (4-8 words)."""
+    h = text.rstrip("?").strip()
+    for prefix in _RQ_PREFIX_PATTERNS:
+        m = re.match(prefix, h, re.IGNORECASE)
+        if m:
+            h = h[m.end():]
+            break
+    h = re.sub(r"\s+and\s+(?:what|how)\s+.*$", "", h, flags=re.IGNORECASE)
+    words = h.split()
+    if len(words) > 8:
+        h = " ".join(words[:8])
+    return h[0].upper() + h[1:] if h else text
 
 
 class PlannerAgent(AgentBase):
@@ -35,7 +61,7 @@ class PlannerAgent(AgentBase):
             rqs = self._decompose_with_llm(topic, ctx)
         else:
             rqs = self._decompose_topic(topic, ctx.config.mode.value)
-        outline = self._build_outline(rqs)
+        outline = self._build_outline(rqs, ctx)
         checklist = self._build_coverage_checklist(topic, ctx)
 
         plan = PlanOutput(
@@ -93,15 +119,35 @@ class PlannerAgent(AgentBase):
             rqs.append(ResearchQuestion(rq_id="rq_future", text=f"What are future directions for {core}?", priority=3, needs_verification=True))
         return rqs
 
-    def _build_outline(self, rqs: list[ResearchQuestion]) -> list[OutlineSection]:
+    def _build_outline(self, rqs: list[ResearchQuestion], ctx: RunContext) -> list[OutlineSection]:
+        heading_map = self._generate_headings(rqs, ctx)
         sections = [OutlineSection(heading="Introduction", rq_refs=[])]
         for rq in rqs:
-            sections.append(OutlineSection(
-                heading=rq.text.rstrip("?").split("What ")[-1].capitalize(),
-                rq_refs=[rq.rq_id],
-            ))
+            heading = heading_map.get(rq.rq_id, _rq_to_heading(rq.text))
+            sections.append(OutlineSection(heading=heading, rq_refs=[rq.rq_id]))
         sections.append(OutlineSection(heading="Conclusion", rq_refs=[r.rq_id for r in rqs]))
         return sections
+
+    def _generate_headings(self, rqs: list[ResearchQuestion], ctx: RunContext) -> dict[str, str]:
+        if not ctx.reasoner.is_llm:
+            return {rq.rq_id: _rq_to_heading(rq.text) for rq in rqs}
+        rq_list = "\n".join(f"{rq.rq_id}: {rq.text}" for rq in rqs)
+        sys_msg, user_msg = PLANNER_HEADINGS.render(rq_list=rq_list)
+        try:
+            raw = ctx.reasoner.complete_text(user_msg, context=sys_msg, trace=ctx.trace)
+            data = parse_json_response(raw)
+            headings = data.get("headings", [])
+            result = {}
+            for h in headings:
+                rq_id = h.get("rq_id", "")
+                heading = h.get("heading", "")
+                if rq_id and heading:
+                    result[rq_id] = heading
+            if result:
+                return result
+        except Exception as exc:
+            logger.warning("LLM heading generation failed, using rule-based: %s", exc)
+        return {rq.rq_id: _rq_to_heading(rq.text) for rq in rqs}
 
     def _build_coverage_checklist(self, topic: str, ctx: RunContext) -> list[dict]:
         is_deep = ctx.config.mode.value == "deep"

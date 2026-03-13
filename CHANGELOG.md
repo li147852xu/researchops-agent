@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.1.0] — 2026-03-13
+
+### Fixed
+
+- **Rollback triggering**: RQs with zero claims now escalate to `high` severity, correctly triggering collect-stage rollbacks instead of silently passing QA
+- **Bucket gap threshold**: `bucket_gap` severity now uses `config.bucket_coverage_threshold` (0.6 for deep mode) instead of a hardcoded 0.5
+- **Conclusion quality**: Conclusion section now synthesises findings across all body sections via a dedicated `WRITER_CONCLUSION` prompt, instead of reusing the generic section-writing logic
+- **Section headings**: Planner generates concise 4-8 word headings via LLM (with improved rule-based fallback) instead of using full research question text
+
+### Improved
+
+- **Web source parsing success rate**: Lowered quality thresholds across the parsing pipeline (`_MIN_QUALITY_CHARS` 500->200, `_MIN_TEXT_LEN_FOR_QUALITY` 200->100, entropy 6.5->7.0, code density 0.30->0.45, min claims 2->1, min content bytes 2048->1024)
+- **HTML extraction chain**: Added `readability-lxml` as a second-tier extraction strategy between trafilatura and BeautifulSoup; trafilatura now falls through to alternatives when extraction is too short
+- **Fetch reliability**: User-Agent string updated from `ResearchOps/0.3` to a realistic browser UA to avoid 403 rejections
+- **Quickstart compatibility**: `quickstart.sh` now scans multiple Python executables (`python3.13`, `python3.12`, `python3.11`, `python3`, `python`) and provides conda hints when no suitable interpreter is found
+
+### Security
+
+- **API key redaction**: `state.json` no longer stores `llm_api_key` or `llm_headers` in cleartext; `RunConfig.safe_dump()` replaces sensitive values with `***REDACTED***`
+
+### Added
+
+- `PLANNER_HEADINGS` prompt template for LLM-based section heading generation
+- `WRITER_CONCLUSION` prompt template for cross-section synthesis
+- `RunConfig.safe_dump()` method for secure serialization
+
+---
+
 ## [1.0.0] — 2026-03-13
 
 Initial release. Full-featured multi-agent research orchestration system.

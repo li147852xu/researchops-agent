@@ -54,6 +54,16 @@ class RunConfig(BaseModel):
     llm_headers: str = ""
     seed: int = 42
 
+    _SENSITIVE_FIELDS = frozenset({"llm_api_key", "llm_headers"})
+
+    def safe_dump(self) -> dict:
+        """Serialize config with sensitive fields redacted."""
+        data = self.model_dump(mode="json")
+        for field in self._SENSITIVE_FIELDS:
+            if field in data and data[field]:
+                data[field] = "***REDACTED***"
+        return data
+
     @property
     def max_collect(self) -> int:
         return 10 if self.mode == RunMode.DEEP else 3

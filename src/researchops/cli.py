@@ -107,7 +107,7 @@ def run(
         seed=seed,
     )
 
-    console.print(f"[bold]ResearchOps Agent v1.0.0[/] — run [cyan]{run_id}[/]")
+    console.print(f"[bold]ResearchOps Agent v1.1.0[/] — run [cyan]{run_id}[/]")
     console.print(f"  Topic: {topic}")
     orch_label = "LangGraph" if graph else "sequential"
     console.print(

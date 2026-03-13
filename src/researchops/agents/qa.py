@@ -100,19 +100,30 @@ class QAAgent(AgentBase):
                     if b.get("bucket_id") not in covered_buckets
                 ]
                 if uncovered:
+                    bucket_high_threshold = getattr(
+                        ctx.config, "bucket_coverage_threshold", 0.6,
+                    )
                     issues.append({
                         "type": "bucket_gap",
                         "detail": f"Uncovered buckets: {', '.join(uncovered[:3])}",
-                        "severity": "high" if bucket_coverage_rate < 0.5 else "medium",
+                        "severity": "high" if bucket_coverage_rate < bucket_high_threshold else "medium",
                     })
 
-        # 5. RQ claim coverage
+        # 5. RQ claim coverage (zero-claim RQs are high-severity)
         rq_claim_counts = ctx.shared.get("rq_claim_counts", {})
-        low_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items() if cnt < ctx.config.min_claims_per_rq]
+        zero_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items() if cnt == 0]
+        low_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items()
+                   if 0 < cnt < ctx.config.min_claims_per_rq]
+        if zero_rqs:
+            issues.append({
+                "type": "rq_undercovered",
+                "detail": f"RQs with ZERO claims: {', '.join(zero_rqs[:3])}",
+                "severity": "high",
+            })
         if low_rqs:
             issues.append({
                 "type": "rq_undercovered",
-                "detail": f"RQs with few claims: {', '.join(low_rqs[:3])}",
+                "detail": f"RQs below threshold: {', '.join(low_rqs[:3])}",
                 "severity": "medium",
             })
 

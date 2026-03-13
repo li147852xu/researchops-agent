@@ -60,7 +60,7 @@ _MIN_SENTENCE_LEN = 40
 _MAX_CLAIM_TEXT_LEN = 220
 _PREFERRED_MIN = 80
 _PREFERRED_MAX = 220
-_MIN_TEXT_LEN_FOR_QUALITY = 200
+_MIN_TEXT_LEN_FOR_QUALITY = 100
 _CHUNK_SIZE = 400
 _CHUNK_OVERLAP = 60
 
@@ -143,7 +143,7 @@ class ReaderAgent(AgentBase):
                 continue
 
             entropy = _text_entropy(text_stripped[:500])
-            if entropy > 6.5:
+            if entropy > 7.0:
                 ctx.trace.log(stage="READ", agent=self.name, action="parse.low_quality",
                               meta={"source_id": src.source_id, "reason": f"high entropy ({entropy:.2f})"})
                 low_quality_sources.append(src.source_id)
@@ -158,7 +158,7 @@ class ReaderAgent(AgentBase):
                 paragraphs = self._split_paragraphs(text)
                 claims = self._extract_claims_rule(src.source_id, paragraphs, rq_ids, rq_texts)
 
-            if len(claims) < 2 and src.source_id not in low_quality_sources:
+            if len(claims) < 1 and src.source_id not in low_quality_sources:
                 ctx.trace.log(stage="READ", agent=self.name, action="parse.low_quality",
                               meta={"source_id": src.source_id, "reason": f"only {len(claims)} claims"})
                 low_quality_sources.append(src.source_id)

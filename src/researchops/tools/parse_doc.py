@@ -77,7 +77,7 @@ _CODE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MIN_QUALITY_CHARS = 500
+_MIN_QUALITY_CHARS = 200
 
 
 def _compute_quality_score(text: str) -> float:
@@ -110,7 +110,7 @@ def _quality_gate(text: str, title: str) -> dict:
         return {"text": "", "title": title, "quality_score": 0.0, "warning": "low_quality", "raw_len": 0}
     code_count = sum(1 for ln in lines if _CODE_LINE_RE.search(ln))
     density = code_count / len(lines)
-    if density > 0.30:
+    if density > 0.45:
         return {
             "text": "",
             "title": title,
@@ -168,23 +168,40 @@ def parse_doc(file_path: str, format: str = "auto") -> dict:
 
 def _parse_html(path: Path) -> dict:
     raw = path.read_text(encoding="utf-8", errors="replace")
+    title_m = re.search(r"<title>(.*?)</title>", raw, re.I | re.S)
+    title = title_m.group(1).strip() if title_m else ""
 
+    # Strategy 1: trafilatura (best for article extraction)
     try:
         import trafilatura
         extracted = trafilatura.extract(raw, include_comments=False, include_tables=True)
-        if extracted and len(extracted.strip()) > 200:
-            title_m = re.search(r"<title>(.*?)</title>", raw, re.I | re.S)
-            title = title_m.group(1).strip() if title_m else ""
+        if extracted and len(extracted.strip()) > 150:
             text = _clean_lines(extracted, title=title)
-            return {"text": text, "title": title}
+            if len(text.strip()) > 150:
+                return {"text": text, "title": title}
     except ImportError:
         pass
 
+    # Strategy 2: readability-lxml (reader-mode extraction)
+    try:
+        from readability import Document
+        doc = Document(raw)
+        title = title or doc.short_title()
+        summary_html = doc.summary()
+        summary_text = re.sub(r"<[^>]+>", " ", summary_html)
+        summary_text = _clean_lines(summary_text, title=title)
+        if len(summary_text.strip()) > 150:
+            return {"text": summary_text, "title": title}
+    except ImportError:
+        pass
+
+    # Strategy 3: BeautifulSoup with main-content heuristics
     try:
         from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(raw, "html.parser")
-        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+        if not title and soup.title and soup.title.string:
+            title = soup.title.string.strip()
 
         for tag_name in _DECOMPOSE_TAGS:
             for tag in soup.find_all(tag_name):
@@ -194,13 +211,13 @@ def _parse_html(path: Path) -> dict:
 
         text = _extract_main_content(soup)
         text = _clean_lines(text, title=title)
-
+        return {"text": text, "title": title}
     except ImportError:
-        title_m = re.search(r"<title>(.*?)</title>", raw, re.I | re.S)
-        title = title_m.group(1).strip() if title_m else ""
-        text = re.sub(r"<[^>]+>", " ", raw)
-        text = _clean_lines(text, title=title)
+        pass
 
+    # Strategy 4: regex fallback
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = _clean_lines(text, title=title)
     return {"text": text, "title": title}
 
 

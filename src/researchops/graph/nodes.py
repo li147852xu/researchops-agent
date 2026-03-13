@@ -67,7 +67,7 @@ def _build_ctx(state: ResearchState) -> RunContext:
             from researchops.models import StateSnapshot
             st = StateSnapshot(
                 run_id=state.get("run_id", run_dir.name),
-                config_snapshot=config.model_dump(mode="json"),
+                config_snapshot=config.safe_dump(),
             )
             save_state(st, run_dir)
 

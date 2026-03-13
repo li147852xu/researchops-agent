@@ -7,20 +7,51 @@ cd "$REPO_ROOT"
 echo "=== ResearchOps Agent — Quick Start ==="
 echo ""
 
-# 1. Check Python version
-PYTHON="${PYTHON:-python3}"
-PY_VERSION=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
-if [[ -z "$PY_VERSION" ]]; then
-    echo "ERROR: Python 3.11+ is required but python3 was not found."
+# 1. Find a suitable Python >= 3.11
+_check_python() {
+    local py="$1"
+    local ver
+    ver=$("$py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || return 1
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [[ "$major" -ge 3 ]] && [[ "$minor" -ge 11 ]]; then
+        echo "$ver"
+        return 0
+    fi
+    return 1
+}
+
+PYTHON=""
+PY_VERSION=""
+
+# Try user-specified, then versioned executables, then generic
+for candidate in "${PYTHON:-}" python3.13 python3.12 python3.11 python3 python; do
+    [[ -z "$candidate" ]] && continue
+    if ver=$(_check_python "$candidate"); then
+        PYTHON="$candidate"
+        PY_VERSION="$ver"
+        break
+    fi
+done
+
+if [[ -z "$PYTHON" ]]; then
+    echo "ERROR: Python 3.11+ is required but no suitable interpreter was found."
+    echo ""
+    echo "Tried: python3.13, python3.12, python3.11, python3, python"
+    echo "Set the PYTHON env var to point to a Python 3.11+ executable, e.g.:"
+    echo "  PYTHON=/path/to/python3.11 make quickstart"
+    if command -v conda &>/dev/null; then
+        echo ""
+        echo "Conda detected — you can create a compatible environment:"
+        echo "  conda create -n researchops python=3.11 -y"
+        echo "  conda activate researchops"
+        echo "  make quickstart"
+    fi
     exit 1
 fi
-PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
-PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 11 ]]; }; then
-    echo "ERROR: Python 3.11+ is required (found $PY_VERSION)."
-    exit 1
-fi
-echo "[1/5] Python $PY_VERSION — OK"
+
+echo "[1/5] Python $PY_VERSION ($PYTHON) — OK"
 
 # 2. Create virtualenv if not present
 if [[ ! -d ".venv" ]]; then

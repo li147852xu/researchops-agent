@@ -104,6 +104,39 @@ PLANNER_BUCKETS = PromptTemplate(
     ],
 )
 
+PLANNER_HEADINGS = PromptTemplate(
+    name="planner_headings",
+    system=(
+        "You are a research writing assistant. Convert research questions into "
+        "concise section headings (4-8 words each) for an academic survey report. "
+        "Always return valid JSON."
+    ),
+    user=(
+        "Convert these research questions into short section headings (4-8 words each).\n\n"
+        "Research questions:\n{rq_list}\n\n"
+        "Return JSON: {{\"headings\": [{{\"rq_id\": \"...\", \"heading\": \"...\"}}]}}\n"
+        "Headings should be noun phrases, NOT questions. Keep them concise."
+    ),
+    few_shot=[
+        {
+            "input": (
+                "rq_1: What are the core architectural components of transformer models "
+                "and how do they differ from RNN/CNN architectures?\n"
+                "rq_2: How do recent efficient-transformer variants compare in throughput "
+                "and accuracy on standard benchmarks?\n"
+                "rq_3: What are the main scalability challenges in training "
+                "billion-parameter transformers?"
+            ),
+            "output": (
+                '{"headings": ['
+                '{"rq_id": "rq_1", "heading": "Core Transformer Architecture"}, '
+                '{"rq_id": "rq_2", "heading": "Efficient Variants and Benchmarks"}, '
+                '{"rq_id": "rq_3", "heading": "Scalability Challenges"}]}'
+            ),
+        }
+    ],
+)
+
 # ---------------------------------------------------------------------------
 # Collector
 # ---------------------------------------------------------------------------
@@ -263,6 +296,25 @@ WRITER_SUMMARIZE = PromptTemplate(
         "Summarise the following research claim in one concise sentence (max 200 chars). "
         "Do NOT include citation markers. Just output the summary sentence.\n\n"
         "Claim: {claim_text}"
+    ),
+)
+
+WRITER_CONCLUSION = PromptTemplate(
+    name="writer_conclusion",
+    system=(
+        "You are a scientific writer producing the conclusion of a literature survey. "
+        "Synthesise findings across all sections into a cohesive summary. "
+        "You MUST cite every statement using [@source_id] markers."
+    ),
+    user=(
+        "Write a conclusion for a research survey on '{topic}' in {lang}.\n\n"
+        "The report has the following sections and key findings:\n{sections_summary}\n\n"
+        "Requirements:\n"
+        "1. Write 1-2 paragraphs that synthesise the key findings across ALL sections.\n"
+        "2. Highlight common themes, notable gaps, and future directions.\n"
+        "3. Every sentence MUST end with at least one [@source_id] citation.\n"
+        "4. Do NOT simply repeat individual section content — synthesise and connect.\n\n"
+        "Output the conclusion paragraphs directly (no 'OVERVIEW:' or 'BULLETS:' markers)."
     ),
 )
 

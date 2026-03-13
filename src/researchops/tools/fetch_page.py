@@ -4,7 +4,12 @@ import hashlib
 import urllib.request
 from pathlib import Path
 
-_MIN_CONTENT_BYTES = 2048
+_MIN_CONTENT_BYTES = 1024
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def _detect_type(data: bytes) -> str:
@@ -24,7 +29,7 @@ def fetch_page(url: str, dest_dir: str) -> dict:
     slug = hashlib.sha256(url.encode()).hexdigest()[:12]
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ResearchOps/0.3"})
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = resp.read()
             http_status = resp.status
