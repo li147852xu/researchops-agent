@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
+## [1.2.0] — 2026-03-13
+
+### Fixed
+
+- **Deep mode source effectiveness**: Added `_JS_HEAVY_DOMAINS` blocklist (openreview.net, nature.com, springer.com, sciencedirect.com, etc.) to skip JS-rendered SPA sites that return empty shell HTML, eliminating wasted fetch calls
+- **Rollback triggering for undercovered RQs**: RQs with claims below half of `min_claims_per_rq` (e.g., 1-2 claims when threshold is 5) now escalate to `"high"` severity, correctly triggering collect-stage rollbacks in deep mode
+- **Web search User-Agent**: DuckDuckGo search in `web_search.py` updated from `ResearchOps/0.1` to a browser-like UA, matching `fetch_page.py`
+- **Quickstart conda discovery**: `quickstart.sh` now probes `$(conda info --base)/bin/python3.{11,12,13}` when conda is available, fixing discovery on systems where conda Python is not on default `$PATH`
+
+### Improved
+
+- **arXiv collection depth**: Deep mode now fetches up to 8/12 arXiv results per query (was 5/8), increasing paper discovery
+- **Web query diversity**: Deep mode now uses up to 4 web queries per RQ (was 2), improving source diversity and coverage
+
+---
+
 ## [1.1.0] — 2026-03-13
 
 ### Fixed

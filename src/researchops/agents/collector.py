@@ -29,6 +29,13 @@ _LOW_QUALITY_DOMAINS = {
     "facebook.com", "twitter.com", "instagram.com", "tiktok.com",
 }
 
+_JS_HEAVY_DOMAINS = {
+    "openreview.net", "www.nature.com", "nature.com",
+    "link.springer.com", "www.sciencedirect.com", "sciencedirect.com",
+    "ieeexplore.ieee.org", "dl.acm.org", "www.semanticscholar.org",
+    "semanticscholar.org", "medium.com", "towardsdatascience.com",
+}
+
 
 class CollectorAgent(AgentBase):
     name = "collector"
@@ -288,7 +295,10 @@ class CollectorAgent(AgentBase):
                     break
 
                 query_id = f"q{collect_round}_{rq.rq_id}_{q_idx}"
-                max_results = 5 if strategy_level == 0 else 8
+                if ctx.config.mode.value == "deep":
+                    max_results = 8 if strategy_level == 0 else 12
+                else:
+                    max_results = 5 if strategy_level == 0 else 8
 
                 try:
                     results = ctx.registry.invoke(
@@ -407,7 +417,8 @@ class CollectorAgent(AgentBase):
                 used_queries=used_queries,
             )
 
-            for q_idx, query in enumerate(queries[:2]):
+            max_web_queries = 4 if ctx.config.mode.value == "deep" else 2
+            for q_idx, query in enumerate(queries[:max_web_queries]):
                 if self._rq_target_met(sources, rq.rq_id, ctx):
                     break
 
@@ -432,7 +443,7 @@ class CollectorAgent(AgentBase):
                     domain = ""
                     if "://" in url:
                         domain = url.split("://", 1)[-1].split("/", 1)[0]
-                    if domain in _LOW_QUALITY_DOMAINS:
+                    if domain in _LOW_QUALITY_DOMAINS or domain in _JS_HEAVY_DOMAINS:
                         continue
 
                     try:

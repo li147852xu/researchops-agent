@@ -24,6 +24,12 @@ class _TitleExtractor(HTMLParser):
             self.title += data
 
 
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """Lightweight web search via DuckDuckGo HTML.
 
@@ -32,7 +38,7 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     try:
         encoded = urllib.parse.urlencode({"q": query})
         url = f"https://html.duckduckgo.com/html/?{encoded}"
-        req = urllib.request.Request(url, headers={"User-Agent": "ResearchOps/0.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="replace")
     except Exception:

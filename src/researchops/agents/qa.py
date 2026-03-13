@@ -109,15 +109,24 @@ class QAAgent(AgentBase):
                         "severity": "high" if bucket_coverage_rate < bucket_high_threshold else "medium",
                     })
 
-        # 5. RQ claim coverage (zero-claim RQs are high-severity)
+        # 5. RQ claim coverage (zero or critically low claims are high-severity)
         rq_claim_counts = ctx.shared.get("rq_claim_counts", {})
+        critical_threshold = max(2, ctx.config.min_claims_per_rq // 2)
         zero_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items() if cnt == 0]
+        critically_low_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items()
+                              if 0 < cnt < critical_threshold]
         low_rqs = [rq_id for rq_id, cnt in rq_claim_counts.items()
-                   if 0 < cnt < ctx.config.min_claims_per_rq]
+                   if critical_threshold <= cnt < ctx.config.min_claims_per_rq]
         if zero_rqs:
             issues.append({
                 "type": "rq_undercovered",
                 "detail": f"RQs with ZERO claims: {', '.join(zero_rqs[:3])}",
+                "severity": "high",
+            })
+        if critically_low_rqs:
+            issues.append({
+                "type": "rq_undercovered",
+                "detail": f"RQs critically low: {', '.join(critically_low_rqs[:3])}",
                 "severity": "high",
             })
         if low_rqs:

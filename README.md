@@ -4,7 +4,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.1.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.0-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -375,6 +375,7 @@ python scripts/run_evalset.py
 - **Sandbox isolation**: Verification scripts run in subprocess sandbox with timeout and resource limits
 - **Tool governance**: All external capabilities route through the Tool Registry with schema validation and permission checks
 - **API key handling**: Keys are never logged in trace; `state.json` redacts sensitive fields (`llm_api_key`, `llm_headers`) via `RunConfig.safe_dump()`
+- **Smart source filtering**: JS-heavy domains (openreview.net, nature.com, springer.com, etc.) that return empty shell HTML are automatically skipped to avoid wasted fetches
 
 ## Development
 

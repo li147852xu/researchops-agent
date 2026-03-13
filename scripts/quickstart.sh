@@ -25,8 +25,17 @@ _check_python() {
 PYTHON=""
 PY_VERSION=""
 
-# Try user-specified, then versioned executables, then generic
-for candidate in "${PYTHON:-}" python3.13 python3.12 python3.11 python3 python; do
+# Discover conda Python paths if conda is available
+CONDA_CANDIDATES=""
+if command -v conda &>/dev/null; then
+    CONDA_BASE="$(conda info --base 2>/dev/null || true)"
+    if [[ -n "$CONDA_BASE" && -d "$CONDA_BASE/bin" ]]; then
+        CONDA_CANDIDATES="$CONDA_BASE/bin/python3.13 $CONDA_BASE/bin/python3.12 $CONDA_BASE/bin/python3.11"
+    fi
+fi
+
+# Try user-specified, then versioned executables, then conda paths, then generic
+for candidate in "${PYTHON:-}" python3.13 python3.12 python3.11 $CONDA_CANDIDATES python3 python; do
     [[ -z "$candidate" ]] && continue
     if ver=$(_check_python "$candidate"); then
         PYTHON="$candidate"
