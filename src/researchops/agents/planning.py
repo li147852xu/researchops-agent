@@ -1,0 +1,222 @@
+"""Planner agent — decompose topic into research questions and coverage buckets."""
+
+from __future__ import annotations
+
+import logging
+import re
+
+from researchops.agents.base import AgentBase
+from researchops.apps.research.prompts import (
+    PLANNER_BUCKETS,
+    PLANNER_HEADINGS,
+    PLANNER_RQS,
+    parse_json_response,
+)
+from researchops.apps.research.schemas import (
+    OutlineSection,
+    PlanOutput,
+    ResearchQuestion,
+)
+from researchops.core.context import RunContext
+from researchops.core.state import AgentResult
+
+logger = logging.getLogger(__name__)
+
+_GENERIC_BUCKETS = [
+    {"bucket_id": "bkt_foundations", "bucket_name": "foundations", "description": "Core concepts, definitions, and theoretical underpinnings"},
+    {"bucket_id": "bkt_methods", "bucket_name": "methods", "description": "Key methods, algorithms, and techniques"},
+    {"bucket_id": "bkt_challenges", "bucket_name": "challenges", "description": "Challenges, limitations, and open problems"},
+    {"bucket_id": "bkt_future", "bucket_name": "future", "description": "Future directions and emerging trends"},
+]
+
+_RQ_PREFIX_PATTERNS = [
+    r"What are the (?:main |key |primary |major |core )?",
+    r"What is the (?:current |present )?(?:state of (?:research on |the art in )?)?",
+    r"What is ",
+    r"How (?:do|does|can|could|has|have) (?:\w+ ){0,3}",
+    r"Why (?:do|does|is|are) (?:\w+ ){0,2}",
+    r"What (?:role does|impact does) .{0,30}? have on ",
+    r"What (?:are|is) ",
+]
+
+
+def _rq_to_heading(text: str) -> str:
+    h = text.rstrip("?").strip()
+    for prefix in _RQ_PREFIX_PATTERNS:
+        m = re.match(prefix, h, re.IGNORECASE)
+        if m:
+            h = h[m.end():]
+            break
+    h = re.sub(r"\s+and\s+(?:what|how)\s+.*$", "", h, flags=re.IGNORECASE)
+    words = h.split()
+    if len(words) > 8:
+        h = " ".join(words[:8])
+    return h[0].upper() + h[1:] if h else text
+
+
+class PlannerAgent(AgentBase):
+    name = "planner"
+
+    def execute(self, ctx: RunContext) -> AgentResult:
+        topic = ctx.config.topic
+        ctx.trace.log(stage="PLAN", agent=self.name, action="start", input_summary=topic)
+
+        if ctx.reasoner.is_llm:
+            rqs = self._decompose_with_llm(topic, ctx)
+        else:
+            rqs = self._decompose_topic(topic, ctx.config.mode.value)
+        outline = self._build_outline(rqs, ctx)
+        checklist = self._build_coverage_checklist(topic, ctx)
+
+        plan = PlanOutput(
+            topic=topic,
+            research_questions=rqs,
+            outline=outline,
+            acceptance_threshold=0.7 if ctx.config.mode.value == "fast" else 0.85,
+            coverage_checklist=checklist,
+        )
+
+        plan_path = ctx.run_dir / "plan.json"
+        plan_path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
+
+        ctx.trace.log(
+            stage="PLAN", agent=self.name, action="complete",
+            output_summary=f"{len(rqs)} RQs, {len(checklist)} buckets, {len(outline)} sections",
+        )
+        return AgentResult(success=True, message=f"Plan created with {len(rqs)} RQs, {len(checklist)} buckets")
+
+    def _decompose_with_llm(self, topic: str, ctx: RunContext) -> list[ResearchQuestion]:
+        mode = ctx.config.mode.value
+        num_rqs = 4 if mode == "deep" else 3
+
+        sys_msg, user_msg = PLANNER_RQS.render(num_rqs=str(num_rqs), topic=topic)
+        try:
+            raw = ctx.reasoner.complete_text(user_msg, context=sys_msg, trace=ctx.trace)
+            data = parse_json_response(raw)
+            questions = data.get("questions", [])
+            rqs = []
+            for q in questions[:num_rqs]:
+                rqs.append(ResearchQuestion(
+                    rq_id=q.get("rq_id", f"rq_{len(rqs)}"),
+                    text=q.get("text", ""),
+                    priority=q.get("priority", 1),
+                    needs_verification=q.get("needs_verification", False),
+                ))
+            if rqs:
+                return rqs
+        except Exception as exc:
+            logger.warning("LLM RQ generation failed, using rule-based: %s", exc)
+        return self._decompose_topic(topic, mode)
+
+    def _decompose_topic(self, topic: str, mode: str) -> list[ResearchQuestion]:
+        words = re.split(r"\s+", topic.strip())
+        core = " ".join(words[:6]) if len(words) > 6 else topic
+
+        rqs = [
+            ResearchQuestion(rq_id="rq_overview", text=f"What is {core} and what are its key components?", priority=1),
+            ResearchQuestion(rq_id="rq_state", text=f"What is the current state of research on {core}?", priority=2, needs_verification=True),
+            ResearchQuestion(rq_id="rq_challenges", text=f"What are the main challenges and limitations of {core}?", priority=2),
+        ]
+        if mode == "deep":
+            rqs.append(ResearchQuestion(rq_id="rq_future", text=f"What are future directions for {core}?", priority=3, needs_verification=True))
+        return rqs
+
+    def _build_outline(self, rqs: list[ResearchQuestion], ctx: RunContext) -> list[OutlineSection]:
+        heading_map = self._generate_headings(rqs, ctx)
+        sections = [OutlineSection(heading="Introduction", rq_refs=[])]
+        for rq in rqs:
+            heading = heading_map.get(rq.rq_id, _rq_to_heading(rq.text))
+            sections.append(OutlineSection(heading=heading, rq_refs=[rq.rq_id]))
+        sections.append(OutlineSection(heading="Conclusion", rq_refs=[r.rq_id for r in rqs]))
+        return sections
+
+    def _generate_headings(self, rqs: list[ResearchQuestion], ctx: RunContext) -> dict[str, str]:
+        if not ctx.reasoner.is_llm:
+            return {rq.rq_id: _rq_to_heading(rq.text) for rq in rqs}
+        rq_list = "\n".join(f"{rq.rq_id}: {rq.text}" for rq in rqs)
+        sys_msg, user_msg = PLANNER_HEADINGS.render(rq_list=rq_list)
+        try:
+            raw = ctx.reasoner.complete_text(user_msg, context=sys_msg, trace=ctx.trace)
+            data = parse_json_response(raw)
+            headings = data.get("headings", [])
+            result = {}
+            for h in headings:
+                rq_id = h.get("rq_id", "")
+                heading = h.get("heading", "")
+                if rq_id and heading:
+                    result[rq_id] = heading
+            if result:
+                return result
+        except Exception as exc:
+            logger.warning("LLM heading generation failed, using rule-based: %s", exc)
+        return {rq.rq_id: _rq_to_heading(rq.text) for rq in rqs}
+
+    def _build_coverage_checklist(self, topic: str, ctx: RunContext) -> list[dict]:
+        is_deep = ctx.config.mode.value == "deep"
+        min_sources = 3 if is_deep else 1
+        min_claims = 5 if is_deep else 2
+
+        if ctx.reasoner.is_llm:
+            buckets = self._llm_buckets(topic, ctx)
+            if buckets:
+                for b in buckets:
+                    b.setdefault("min_sources", min_sources)
+                    b.setdefault("min_claims", min_claims)
+                return buckets
+
+        return self._rule_based_buckets(topic, min_sources, min_claims)
+
+    def _llm_buckets(self, topic: str, ctx: RunContext) -> list[dict]:
+        sys_msg, user_msg = PLANNER_BUCKETS.render(topic=topic)
+        try:
+            raw = ctx.reasoner.complete_text(user_msg, context=sys_msg, trace=ctx.trace)
+            data = parse_json_response(raw)
+            buckets = data.get("buckets", [])
+            if len(buckets) >= 3:
+                return buckets[:8]
+        except Exception as exc:
+            logger.warning("LLM bucket generation failed: %s", exc)
+        return []
+
+    def _rule_based_buckets(self, topic: str, min_sources: int, min_claims: int) -> list[dict]:
+        topic_lower = topic.lower()
+        specialized: dict[str, list[dict]] = {
+            "deep learning": [
+                {"bucket_id": "bkt_architectures", "bucket_name": "architectures", "description": "Neural network architectures (CNN, RNN, Transformer, etc.)"},
+                {"bucket_id": "bkt_optimization", "bucket_name": "optimization", "description": "Training methods, optimizers, and convergence"},
+                {"bucket_id": "bkt_generalization", "bucket_name": "generalization", "description": "Generalization, regularization, and overfitting"},
+                {"bucket_id": "bkt_robustness", "bucket_name": "robustness", "description": "Adversarial robustness and model reliability"},
+                {"bucket_id": "bkt_scaling", "bucket_name": "scaling", "description": "Model scaling, efficiency, and compute trade-offs"},
+                {"bucket_id": "bkt_applications", "bucket_name": "applications", "description": "Real-world applications and deployment"},
+            ],
+            "quantum computing": [
+                {"bucket_id": "bkt_qubits", "bucket_name": "qubits", "description": "Qubit technologies and hardware implementations"},
+                {"bucket_id": "bkt_algorithms", "bucket_name": "algorithms", "description": "Quantum algorithms and computational advantage"},
+                {"bucket_id": "bkt_error_correction", "bucket_name": "error_correction", "description": "Quantum error correction and fault tolerance"},
+                {"bucket_id": "bkt_applications", "bucket_name": "applications", "description": "Applications in cryptography, simulation, optimization"},
+                {"bucket_id": "bkt_software", "bucket_name": "software", "description": "Quantum programming languages and SDKs"},
+            ],
+            "natural language processing": [
+                {"bucket_id": "bkt_models", "bucket_name": "models", "description": "Language models and pre-training approaches"},
+                {"bucket_id": "bkt_understanding", "bucket_name": "understanding", "description": "Text understanding and semantic analysis"},
+                {"bucket_id": "bkt_generation", "bucket_name": "generation", "description": "Text generation and summarization"},
+                {"bucket_id": "bkt_evaluation", "bucket_name": "evaluation", "description": "Benchmarks and evaluation metrics"},
+                {"bucket_id": "bkt_ethics", "bucket_name": "ethics", "description": "Bias, fairness, and ethical considerations"},
+            ],
+        }
+
+        for key, buckets in specialized.items():
+            if key in topic_lower or all(w in topic_lower for w in key.split()):
+                for b in buckets:
+                    b["min_sources"] = min_sources
+                    b["min_claims"] = min_claims
+                return buckets
+
+        result = []
+        for b in _GENERIC_BUCKETS:
+            entry = dict(b)
+            entry["min_sources"] = min_sources
+            entry["min_claims"] = min_claims
+            entry["description"] = f"{entry['description']} related to {topic}"
+            result.append(entry)
+        return result

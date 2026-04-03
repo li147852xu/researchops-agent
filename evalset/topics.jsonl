@@ -1,0 +1,30 @@
+{"topic": "quantum computing applications", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "large language model alignment", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "CRISPR gene editing advances", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "renewable energy storage", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "autonomous vehicle safety", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "federated learning privacy", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "protein structure prediction", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "blockchain scalability solutions", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "neuromorphic computing", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "robotic surgery advances", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "climate change mitigation", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "transformer architecture evolution", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "drug discovery with AI", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "6G wireless communication", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "digital twin technology", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "量子计算最新进展", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "大语言模型安全对齐", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "基因编辑技术应用", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "新能源储能技术", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "自动驾驶技术挑战", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "联邦学习隐私保护", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "蛋白质结构预测", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "edge computing architectures", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "synthetic biology applications", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "zero-knowledge proofs", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "multi-agent systems coordination", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "brain-computer interfaces", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "carbon capture technology", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "supply chain optimization with AI", "mode": "fast", "sources": "demo", "expected_rqs": 3}
+{"topic": "homomorphic encryption", "mode": "fast", "sources": "demo", "expected_rqs": 3}

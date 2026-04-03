@@ -1,0 +1,13 @@
+Survey of Multi-Agent Systems for Research Automation
+
+Multi-agent systems represent a paradigm shift in how automated research is conducted. Instead of relying on a single monolithic model, these systems decompose complex research tasks into subtasks handled by specialized agents.
+
+The current state of multi-agent research shows promising results in several domains. In scientific literature review, agent-based systems can process hundreds of papers, extract key findings, and synthesize coherent summaries with proper citations.
+
+Key challenges in multi-agent systems include coordination overhead, error propagation between agents, and difficulty in maintaining consistent context across long-running tasks. These limitations often manifest as reduced accuracy in final outputs compared to expert human researchers.
+
+Recent studies suggest that structured workflows with explicit verification steps significantly improve output quality. Systems that incorporate sandbox execution for code verification and fact-checking demonstrate higher reliability than those relying solely on language model outputs.
+
+The trend toward tool-augmented agents allows systems to interact with external APIs, execute code, and access databases. This capability is essential for research tasks requiring quantitative analysis or real-time data retrieval.
+
+Future directions include improved planning algorithms, better resource allocation across agents, and more sophisticated evaluation metrics that capture both accuracy and comprehensiveness of research outputs.
