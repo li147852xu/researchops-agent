@@ -6,6 +6,9 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![LangGraph](https://img.shields.io/badge/LangGraph-orchestration-green.svg)
 ![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-orange.svg)
+[![HF Spaces](https://img.shields.io/badge/Live%20Demo-HuggingFace%20Spaces-yellow?logo=huggingface)](https://huggingface.co/spaces/Tiantanghuaxiao/researchops)
+
+> **Live Demo:** https://huggingface.co/spaces/Tiantanghuaxiao/researchops — runs in `LLM_BACKEND=none` (rule-based) by default; bring your own key via Space Secrets to upgrade. Self-host: see [deploy/hf_spaces/DEPLOY.md](deploy/hf_spaces/DEPLOY.md).
 
 ---
 
@@ -21,6 +24,8 @@ Configuration → Multi-Agent Pipeline → Evidence-Grounded Report → Quality 
 ```
 
 It is designed to demonstrate **production-grade AI engineering** — not just calling LLM APIs, but building a platform where agents collaborate, evidence is tracked, quality is measured, and new domains plug in without touching pipeline code.
+
+ResearchOps 同时**遵循 MCP 协议（Anthropic Model Context Protocol）**：通过内置的 stdio MCP Server 适配层，ResearchOps 的工具与历史 run 可被任意 MCP 客户端（Claude Desktop / Cursor / Cline 等）调用。详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md)。
 
 ## Architecture
 
@@ -166,6 +171,34 @@ DEEPSEEK_API_KEY=sk-your-key-here
 | OpenRouter / vLLM / Ollama | `openai_compat` | `OPENAI_API_KEY` or `LLM_API_KEY` | Set `LLM_BASE_URL` accordingly |
 | None (rule-based) | `none` | — | For development without API access |
 
+### Observability (optional)
+
+ResearchOps mirrors every run into [Langfuse](https://langfuse.com) when three env variables are present, giving a hosted view of every agent, every LLM call (with tokens / cost / latency), and every tool invocation — without touching `runs/<id>/trace.jsonl`. Both Langfuse SDK v2 and v3 are auto-detected; the integration silently no-ops when keys are absent or the SDK isn't installed.
+
+```bash
+pip install -e ".[observability]"
+```
+
+```bash
+# .env (or shell env)
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com   # or http://localhost:3000 (self-host)
+```
+
+**Self-host with docker compose** (single-node, suitable for local dev):
+
+```bash
+git clone https://github.com/langfuse/langfuse.git
+cd langfuse
+docker compose up -d
+# wait ~30s, then:
+curl -fsS http://localhost:3000/api/public/health   # => {"status":"OK"}
+# open http://localhost:3000, create org + project, copy the pk/sk into your .env
+```
+
+After `researchops run "..."` completes, open the Langfuse UI: each run becomes a trace named after its `run_id`, with one span per agent (`PLAN/planner`, `COLLECT/collector`, ...), one generation per LLM call (input / output / token usage / model latency), and one short span per tool invocation. If Langfuse is unreachable mid-run, the call is downgraded to a `WARNING` log and the run continues — `runs/<id>/trace.jsonl` remains the canonical, durable audit log.
+
 ## Run Outputs
 
 Each run produces a workspace under `runs/<run_id>/`:
@@ -202,6 +235,7 @@ Each run produces a workspace under `runs/<run_id>/`:
 | `researchops inspect-config NAME` | Show config JSON schema |
 | `researchops web` | Launch Gradio Web UI |
 | `researchops api` | Launch FastAPI server |
+| `researchops mcp` | Launch MCP stdio server (for Claude Desktop / Cursor / Cline) |
 | `researchops eval RUN_DIR --app NAME` | Recompute evaluation |
 | `researchops resume RUN_DIR` | Resume interrupted run |
 | `researchops replay RUN_DIR` | Replay trace |
@@ -251,7 +285,41 @@ src/researchops/
 | **Data Models** | Pydantic v2 |
 | **Persistence** | SQLite + SQLAlchemy |
 | **Sandbox** | Subprocess isolation (Docker-ready) |
+| **MCP** | 遵循 MCP 协议（Anthropic Model Context Protocol）— ResearchOps 的工具与历史 run 可被任意 MCP 客户端（Claude Desktop / Cursor / Cline）调用，详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | **Dev** | pytest, Ruff, Makefile |
+
+## Performance & Cost
+
+Benchmarked over **25 diverse topics** (20 research + 5 market intelligence) on **DeepSeek** (`deepseek-chat`, `mode=fast`, hermetic demo sources, `--allow-net=false`). Full report and charts: [experiments/benchmark/summary.md](experiments/benchmark/summary.md).
+
+**P95 latency: 111.8s | 平均成本: ¥0.02/报告 | rollback 触发率: 28% | rollback 后 QA pass 率: 100%**
+
+| Metric | Value (DeepSeek, 25 topics) |
+|---|---|
+| Latency P50 / P95 / P99 | 67.5 s / 111.8 s / 112.2 s |
+| Mean / max cost per report | ¥0.0186 / ¥0.0266 (~$0.0026 / $0.0037) |
+| Total cost for 25 reports | ¥0.47 (~$0.065) |
+| Rollback trigger rate | 28.0% (7 / 25 runs) |
+| Post-rollback QA pass rate | 100.0% (every rollback recovered) |
+| Final QA pass rate (overall) | 100.0% |
+| Citation coverage (mean) | 80.1% |
+| Tokens per report (mean / total) | 13 K / 326 K |
+| Wall-clock for the full sweep | 31 min |
+
+Per-agent mean wall-clock (seconds): planner 8.3, reader 28.8, writer 29.0, verifier 0.5, qa 0.003, collector 0.008, supervisor 0.0 — read+write dominate, as expected for an LLM-bound workload.
+
+Pricing assumes DeepSeek list price (input $0.14 / output $0.28 per 1 M tokens; USD → CNY = 7.2). The benchmark pipes through the standard CLI, so it exercises the full plan → collect → read → verify → write → QA → supervisor rollback path; "QA pass" is the pipeline's own gate (`stage=QA, action=complete` event in `trace.jsonl`).
+
+```bash
+# 快速冒烟（约 3 秒,无 LLM）
+python scripts/run_benchmark.py --max-topics 3 --backend none
+
+# 真实压力测试（约 31 分钟,DeepSeek）
+DEEPSEEK_API_KEY=sk-... LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-chat \
+  python scripts/run_benchmark.py --max-topics 25 --backend openai_compat
+```
+
+If `--backend openai_compat` is requested but no API key is found in the environment, the harness auto-falls back to `--backend none` and labels every record with `mock_llm=true`.
 
 ## Development
 
@@ -263,14 +331,12 @@ make fmt      # auto-format
 
 ## Resume Talking Points
 
-This project demonstrates:
-
-- **Reusable multi-agent workflow core** — seven agents collaborating through LangGraph with supervisor-driven rollback, LLM-assisted remediation planning, and quality gating
-- **AI application platform** — configuration-driven app assembly where new domains require only prompts, schemas, and tool policy; no pipeline code
-- **Production-grade AI engineering** — LangGraph orchestration, FastAPI, Pydantic v2, tool governance with permissions/caching/audit, sandbox execution, hybrid retrieval (BM25 + embeddings + RRF), checkpoint/resume, evaluation pipelines
-- **Evidence-grounded outputs** — every claim links to a source; citation coverage validated by QA agent; numbered references rendered in the Web UI
-- **Intelligent re-collection** — supervisor suggestions wired into collector; query novelty enforcement; strategy escalation; cache invalidation ensures each rollback round fetches genuinely different sources
-- **Configurable domain apps** — General Research and Market Intelligence as proof of core reusability; adding a new domain requires ~5 files
+- **LangGraph** 编排 7 Agent **Multi-Agent** + **Supervisor**,rollback 触发率 28% 兜底 **Agentic Workflow**
+- **Planning** 拆解 + 跨轮 **Memory** + **Checkpoint/Replay**:全量 `trace.jsonl` 可回放
+- **RAG** **Hybrid Retrieval** = **BM25** + **Embedding** + **RRF** **Reranker**,引用覆盖率 80.1%
+- **Tool Calling** / **Function Calling** + **MCP** (Model Context Protocol) stdio 双协议,**Sandbox** 子进程隔离
+- **LLM-as-Judge** + **Eval Harness** 25 题真实 LLM 压测:P95 111.8s / ¥0.0186 篇 / QA pass 100%
+- **Observability** **Langfuse** v2/v3 facade + HuggingFace Spaces 公开 demo + 175 项 pytest 全路径覆盖
 
 ## License
 
