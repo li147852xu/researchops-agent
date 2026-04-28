@@ -223,7 +223,7 @@ def _run_pipeline(
     config_data: dict[str, Any] = {
         "topic": topic, "mode": mode, "allow_net": True,
         "sources": sources, "run_dir": run_dir,
-        "llm": llm if llm != "none" else "openai_compat",
+        "llm": llm,
         "llm_model": model, "llm_base_url": base_url, "llm_api_key": key,
     }
     if extra_config:

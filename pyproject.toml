@@ -39,9 +39,11 @@ embeddings = [
 ]
 llm-openai = ["httpx>=0.24,<1"]
 llm-anthropic = ["httpx>=0.24,<1"]
-web = ["gradio>=4.0,<5"]
+web = ["gradio>=4.0,<5", "huggingface_hub>=0.19,<1", "starlette<1", "fastapi<0.116"]
 api = ["fastapi>=0.110,<1", "uvicorn>=0.27,<1"]
 persistence = ["sqlalchemy>=2.0,<3"]
+mcp = ["mcp>=1.27,<2"]
+observability = ["langfuse>=2,<4"]
 
 [project.scripts]
 researchops = "researchops.cli:app"

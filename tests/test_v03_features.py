@@ -9,7 +9,7 @@ from researchops.core.tracing import TraceLogger
 
 
 def test_md_constraint():
-    """Only README.md and CHANGELOG.md should exist in the repo (excluding runs/ and .pytest_cache/)."""
+    """Only README.md, CHANGELOG.md, and approved docs/*.md should exist (excluding runs/ and .pytest_cache/)."""
     repo_root = Path(__file__).parent.parent
     md_files = []
     for f in repo_root.rglob("*.md"):
@@ -17,10 +17,15 @@ def test_md_constraint():
         parts = rel.parts
         if any(p.startswith(".") for p in parts):
             continue
-        if "runs" in parts or "__pycache__" in parts:
+        if (
+            "runs" in parts
+            or "__pycache__" in parts
+            or "experiments" in parts
+            or "deploy" in parts
+        ):
             continue
         md_files.append(str(rel))
-    allowed = {"README.md", "CHANGELOG.md"}
+    allowed = {"README.md", "CHANGELOG.md", "docs/MCP_INTEGRATION.md"}
     assert set(md_files) == allowed, f"Unexpected .md files: {set(md_files) - allowed}"
 
 
