@@ -279,5 +279,31 @@ def api(
     uvicorn.run(api_app, host=host, port=port, reload=reload)
 
 
+@app.command(name="mcp")
+def mcp_cmd(
+    runs_dir: Path = typer.Option(
+        Path("runs"),
+        "--runs-dir",
+        help="Directory containing run artifacts to expose as MCP resources",
+    ),
+) -> None:
+    """Run ResearchOps as a Model Context Protocol stdio server.
+
+    Exposes every registered tool (web_search, arxiv_search, parse, sandbox_exec, ...)
+    and every runs/<id>/{plan.json,sources.jsonl,report.md} artifact to any MCP
+    client (Claude Desktop, Cursor, Cline). Requires the `mcp` extra:
+    `pip install -e ".[mcp]"`.
+    """
+    try:
+        from researchops.mcp.server import run as run_mcp
+    except ImportError as exc:  # pragma: no cover - extra not installed
+        console.print(
+            "[red]MCP SDK not installed.[/] Install with: "
+            "[bold]pip install -e \".[mcp]\"[/]"
+        )
+        raise SystemExit(1) from exc
+    run_mcp(runs_dir=runs_dir)
+
+
 if __name__ == "__main__":
     app()
