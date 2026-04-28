@@ -1,0 +1,45 @@
+{
+  "n_total": 25,
+  "n_ok": 25,
+  "n_failed": 0,
+  "any_mock_llm": false,
+  "all_mock_llm": false,
+  "latency": {
+    "p50": 67.51,
+    "p95": 111.754,
+    "p99": 112.21,
+    "mean": 74.608,
+    "max": 112.26
+  },
+  "tokens": {
+    "mean": 13026.7,
+    "max": 17976,
+    "total": 325667
+  },
+  "cost_usd": {
+    "mean": 0.0026,
+    "max": 0.0037,
+    "total": 0.0647
+  },
+  "cost_cny": {
+    "mean": 0.0186,
+    "max": 0.0266,
+    "total": 0.4659
+  },
+  "rollback": {
+    "trigger_rate": 0.28,
+    "max_rounds": 2,
+    "post_rollback_pass_rate": 1.0
+  },
+  "qa_pass_rate": 1.0,
+  "citation_coverage_mean": 0.801,
+  "agent_means_sec": {
+    "planner": 8.323,
+    "collector": 0.008,
+    "reader": 28.83,
+    "verifier": 0.475,
+    "writer": 28.953,
+    "qa": 0.003,
+    "supervisor": 0.0
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "research": [
+    {"topic": "large language model alignment via reinforcement learning from human feedback"},
+    {"topic": "transformer attention mechanism efficiency optimization"},
+    {"topic": "brain-computer interfaces clinical applications"},
+    {"topic": "CRISPR gene editing therapeutic delivery"},
+    {"topic": "magnetic confinement fusion energy net gain"},
+    {"topic": "climate change adaptation strategies for coastal cities"},
+    {"topic": "antibiotic resistance and novel antimicrobial discovery"},
+    {"topic": "perovskite solar cell stability and efficiency"},
+    {"topic": "post-quantum cryptography lattice-based schemes"},
+    {"topic": "EU AI Act regulatory compliance for foundation models"},
+    {"topic": "global semiconductor supply chain bottlenecks"},
+    {"topic": "mRNA vaccine platform extensions beyond COVID-19"},
+    {"topic": "autonomous driving perception sensor fusion"},
+    {"topic": "retrieval augmented generation architectures and evaluation"},
+    {"topic": "federated learning privacy guarantees"},
+    {"topic": "robotic manipulation learning from demonstration"},
+    {"topic": "room-temperature superconductor evidence and reproducibility"},
+    {"topic": "agentic LLM systems planning and tool use"},
+    {"topic": "neural radiance fields for 3D scene reconstruction"},
+    {"topic": "grid-scale battery storage for renewable integration"}
+  ],
+  "market": [
+    {"topic": "NVDA competitive position in AI accelerators", "ticker": "NVDA", "analysis_type": "competitive"},
+    {"topic": "TSLA energy and automotive segment outlook", "ticker": "TSLA", "analysis_type": "fundamental"},
+    {"topic": "AAPL services revenue growth and margin trajectory", "ticker": "AAPL", "analysis_type": "fundamental"},
+    {"topic": "MSFT cloud and AI monetization roadmap", "ticker": "MSFT", "analysis_type": "competitive"},
+    {"topic": "GOOGL search moat under generative AI disruption", "ticker": "GOOGL", "analysis_type": "competitive"}
+  ]
+}
