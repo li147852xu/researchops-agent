@@ -25,7 +25,7 @@ Configuration → Multi-Agent Pipeline → Evidence-Grounded Report → Quality 
 
 It is designed to demonstrate **production-grade AI engineering** — not just calling LLM APIs, but building a platform where agents collaborate, evidence is tracked, quality is measured, and new domains plug in without touching pipeline code.
 
-ResearchOps 同时**遵循 MCP 协议（Anthropic Model Context Protocol）**：通过内置的 stdio MCP Server 适配层，ResearchOps 的工具与历史 run 可被任意 MCP 客户端（Claude Desktop / Cursor / Cline 等）调用。详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md)。
+ResearchOps also **speaks the Model Context Protocol (MCP, by Anthropic)** — its built-in stdio MCP server lets any MCP-aware client (Claude Desktop, Cursor, Cline) drive every registered tool and read every historical run as a resource. See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md).
 
 ## Architecture
 
@@ -285,14 +285,14 @@ src/researchops/
 | **Data Models** | Pydantic v2 |
 | **Persistence** | SQLite + SQLAlchemy |
 | **Sandbox** | Subprocess isolation (Docker-ready) |
-| **MCP** | 遵循 MCP 协议（Anthropic Model Context Protocol）— ResearchOps 的工具与历史 run 可被任意 MCP 客户端（Claude Desktop / Cursor / Cline）调用，详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
+| **MCP** | Model Context Protocol stdio server — every tool and historical run is callable from any MCP client (Claude Desktop / Cursor / Cline). See [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) |
 | **Dev** | pytest, Ruff, Makefile |
 
 ## Performance & Cost
 
 Benchmarked over **25 diverse topics** (20 research + 5 market intelligence) on **DeepSeek** (`deepseek-chat`, `mode=fast`, hermetic demo sources, `--allow-net=false`). Full report and charts: [experiments/benchmark/summary.md](experiments/benchmark/summary.md).
 
-**P95 latency: 111.8s | 平均成本: ¥0.02/报告 | rollback 触发率: 28% | rollback 后 QA pass 率: 100%**
+**P95 latency: 111.8s | Mean cost: ¥0.0186 / report | Rollback trigger rate: 28% | Post-rollback QA pass: 100%**
 
 | Metric | Value (DeepSeek, 25 topics) |
 |---|---|
@@ -311,10 +311,10 @@ Per-agent mean wall-clock (seconds): planner 8.3, reader 28.8, writer 29.0, veri
 Pricing assumes DeepSeek list price (input $0.14 / output $0.28 per 1 M tokens; USD → CNY = 7.2). The benchmark pipes through the standard CLI, so it exercises the full plan → collect → read → verify → write → QA → supervisor rollback path; "QA pass" is the pipeline's own gate (`stage=QA, action=complete` event in `trace.jsonl`).
 
 ```bash
-# 快速冒烟（约 3 秒,无 LLM）
+# Quick smoke test (~3 s, no LLM)
 python scripts/run_benchmark.py --max-topics 3 --backend none
 
-# 真实压力测试（约 31 分钟,DeepSeek）
+# Real stress test (~31 min, DeepSeek)
 DEEPSEEK_API_KEY=sk-... LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-chat \
   python scripts/run_benchmark.py --max-topics 25 --backend openai_compat
 ```
@@ -331,12 +331,12 @@ make fmt      # auto-format
 
 ## Resume Talking Points
 
-- **LangGraph** 编排 7 Agent **Multi-Agent** + **Supervisor**,rollback 触发率 28% 兜底 **Agentic Workflow**
-- **Planning** 拆解 + 跨轮 **Memory** + **Checkpoint/Replay**:全量 `trace.jsonl` 可回放
-- **RAG** **Hybrid Retrieval** = **BM25** + **Embedding** + **RRF** **Reranker**,引用覆盖率 80.1%
-- **Tool Calling** / **Function Calling** + **MCP** (Model Context Protocol) stdio 双协议,**Sandbox** 子进程隔离
-- **LLM-as-Judge** + **Eval Harness** 25 题真实 LLM 压测:P95 111.8s / ¥0.0186 篇 / QA pass 100%
-- **Observability** **Langfuse** v2/v3 facade + HuggingFace Spaces 公开 demo + 175 项 pytest 全路径覆盖
+- **LangGraph** orchestrates a 7-agent **Multi-Agent** pipeline with a **Supervisor** **Agentic Workflow**; rollback fires on 28% of runs
+- **Planning** decomposition + cross-round **Memory** + **Checkpoint/Replay**: full replay from `trace.jsonl`
+- **RAG** **Hybrid Retrieval** = **BM25** + **Embedding** + **RRF** rank-fusion **Reranker**; mean citation coverage 80.1%
+- **Tool Calling** / **Function Calling** dual-protocol over OpenAI-compat + **MCP** (Model Context Protocol) stdio; **Sandbox** subprocess isolation
+- **LLM-as-Judge** + **Eval Harness** stress-tested over 25 real-LLM topics: P95 111.8s, ¥0.0186 / report, 100% QA pass
+- **Observability** through a **Langfuse** v2/v3 auto-dispatch facade; public HuggingFace Spaces demo; 175 pytest cases across the full path
 
 ## License
 
